@@ -1,0 +1,146 @@
+image:
+  repository: 0xavi0/fleet-monitor
+  tag: 0.0.1
+  imagePullPolicy: IfNotPresent
+
+# Namespace to watch
+namespace: cattle-fleet-system
+
+# Which controllers to enable
+controllers:
+  bundle: true
+  bundledeployment: false
+  cluster: false
+  gitrepo: false
+  helmapp: false
+
+# Worker counts (lower than production controllers)
+workers:
+  bundle: 5
+  bundledeployment: 5
+  cluster: 5
+  gitrepo: 5
+  helmapp: 5
+
+# Logging configuration
+logFormat: json
+logLevel: info
+debug: false
+debugLevel: 0
+
+# Sharding support (same as fleet controller)
+shardID: ""
+
+# Node selector and tolerations
+nodeSelector: {}
+tolerations: []
+priorityClassName: ""
+
+# Leader election
+leaderElection:
+  enabled: true
+  leaseDuration: 30s
+  retryPeriod: 10s
+  renewDeadline: 25s
+
+# Resource limits (monitors should be lightweight)
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Security context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+# Extra environment variables
+extraEnv: []
+# Example:
+# - name: CUSTOM_VAR
+#   value: "custom_value"
+
+# Per-controller logging configuration
+logging:
+  # Bundle controller logging
+  bundle:
+    detailed: true  # true = detailed logs, false = summary only
+    eventFilters:
+      generationChange: false
+      statusChange: false
+      annotationChange: false
+      labelChange: false
+      resourceVersionChange: true
+      deletion: false
+      notFound: false
+      create: false
+      triggeredBy: false
+
+  # BundleDeployment controller logging
+  bundleDeployment:
+    detailed: true
+    eventFilters:
+      generationChange: false
+      statusChange: false
+      annotationChange: false
+      labelChange: false
+      resourceVersionChange: true
+      deletion: false
+      notFound: false
+      create: false
+      triggeredBy: false
+
+  # Cluster controller logging
+  cluster:
+    detailed: true
+    eventFilters:
+      generationChange: false
+      statusChange: false
+      annotationChange: false
+      labelChange: false
+      resourceVersionChange: true
+      deletion: false
+      notFound: false
+      create: false
+      triggeredBy: false
+
+  # GitRepo controller logging
+  gitRepo:
+    detailed: false
+    eventFilters:
+      generationChange: false
+      statusChange: false
+      annotationChange: false
+      labelChange: false
+      resourceVersionChange: false
+      deletion: false
+      notFound: false
+      create: false
+      triggeredBy: false
+
+  # HelmApp controller logging
+  helmApp:
+    detailed: false
+    eventFilters:
+      generationChange: false
+      statusChange: false
+      annotationChange: false
+      labelChange: false
+      resourceVersionChange: false
+      deletion: false
+      notFound: false
+      create: false
+      triggeredBy: false
+
+  # Summary configuration (applies to all controllers in summary mode)
+  summary:
+    # How often to emit summary in duration format (5s, 30s, 1m, etc.)
+    interval: "30s"
+
+    # Reset counters after each summary (false = cumulative counts)
+    resetOnPrint: false
