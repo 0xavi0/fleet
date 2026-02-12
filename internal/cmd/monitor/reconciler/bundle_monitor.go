@@ -27,12 +27,16 @@ type BundleMonitorReconciler struct {
 	ShardID string
 	Workers int
 
+	// BundleQuery for cluster->bundle mapping
+	Query BundleQuery
+
 	// Cache to store previous state
 	cache *ObjectCache
 
 	// Per-controller logging mode
-	DetailedLogs bool
-	EventFilters EventTypeFilters
+	DetailedLogs   bool
+	EventFilters   EventTypeFilters
+	ResourceFilter *ResourceFilter
 }
 
 // SetupWithManager sets up the controller - IDENTICAL to BundleReconciler.SetupWithManager
@@ -64,16 +68,19 @@ func (r *BundleMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 				ns, name := target.BundleFromDeployment(labels)
 				if ns != "" && name != "" {
-					// Log trigger source
-					logger := log.FromContext(ctx)
-					logRelatedResourceTrigger(logger, r.DetailedLogs, r.EventFilters, "Bundle", ns, name, "BundleDeployment", a.GetName(), a.GetNamespace())
+					// Check resource filter before logging
+					if r.ResourceFilter.Matches(ns, name) {
+						// Log trigger source
+						logger := log.FromContext(ctx)
+						logRelatedResourceTrigger(logger, r.DetailedLogs, r.EventFilters, "Bundle", ns, name, "BundleDeployment", a.GetName(), a.GetNamespace())
 
-					return []ctrl.Request{{
-						NamespacedName: types.NamespacedName{
-							Namespace: ns,
-							Name:      name,
-						},
-					}}
+						return []ctrl.Request{{
+							NamespacedName: types.NamespacedName{
+								Namespace: ns,
+								Name:      name,
+							},
+						}}
+					}
 				}
 
 				return nil
@@ -84,11 +91,38 @@ func (r *BundleMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			// Fan out from cluster to bundle
 			&fleet.Cluster{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []ctrl.Request {
-				// Note: In monitor, we can't query bundles like the real controller
-				// Log the trigger but can't enqueue specific bundles without BundleQuery interface
+				cluster := a.(*fleet.Cluster)
 				logger := log.FromContext(ctx)
-				logRelatedResourceTrigger(logger, r.DetailedLogs, r.EventFilters, "Bundle", "", "", "Cluster", a.GetName(), a.GetNamespace())
-				return nil // Monitor only - can't query without BundleQuery interface
+
+				// Query which bundles are affected by this cluster
+				bundlesToRefresh, _, err := r.Query.BundlesForCluster(ctx, cluster)
+				if err != nil {
+					// Log error but don't fail - monitoring shouldn't crash on query errors
+					logger.Error(err, "Failed to query bundles for cluster",
+						"cluster", cluster.Name,
+						"namespace", cluster.Namespace)
+					return nil
+				}
+
+				requests := []ctrl.Request{}
+				for _, bundle := range bundlesToRefresh {
+					// Check resource filter before logging and enqueueing
+					if r.ResourceFilter.Matches(bundle.Namespace, bundle.Name) {
+						// Log each bundle trigger with correct name/namespace
+						logRelatedResourceTrigger(logger, r.DetailedLogs, r.EventFilters,
+							"Bundle", bundle.Namespace, bundle.Name,
+							"Cluster", cluster.GetName(), cluster.GetNamespace())
+
+						requests = append(requests, ctrl.Request{
+							NamespacedName: types.NamespacedName{
+								Namespace: bundle.Namespace,
+								Name:      bundle.Name,
+							},
+						})
+					}
+				}
+
+				return requests
 			}),
 			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
 		).
@@ -99,6 +133,11 @@ func (r *BundleMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // Reconcile monitors bundle reconciliation events
 func (r *BundleMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	// Check resource filter - skip if resource doesn't match
+	if !r.ResourceFilter.Matches(req.Namespace, req.Name) {
+		return ctrl.Result{}, nil
+	}
+
 	logger := log.FromContext(ctx).WithName("bundle-monitor")
 	logger = logger.WithValues(
 		"bundle", req.NamespacedName.String(),

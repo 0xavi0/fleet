@@ -88,6 +88,11 @@ spec:
           value: {{ .Values.logging.gitRepo.detailed | quote }}
         - name: FLEET_MONITOR_HELMAPP_DETAILED
           value: {{ .Values.logging.helmApp.detailed | quote }}
+        # Bundle resource filters
+        - name: FLEET_MONITOR_BUNDLE_RESOURCE_FILTER_NAMESPACE
+          value: {{ .Values.logging.bundle.resourceFilter.namespace | quote }}
+        - name: FLEET_MONITOR_BUNDLE_RESOURCE_FILTER_NAME
+          value: {{ .Values.logging.bundle.resourceFilter.name | quote }}
         # Bundle event filters
         - name: FLEET_MONITOR_BUNDLE_EVENT_GENERATION_CHANGE
           value: {{ .Values.logging.bundle.eventFilters.generationChange | quote }}
@@ -107,6 +112,11 @@ spec:
           value: {{ .Values.logging.bundle.eventFilters.create | quote }}
         - name: FLEET_MONITOR_BUNDLE_EVENT_TRIGGERED_BY
           value: {{ .Values.logging.bundle.eventFilters.triggeredBy | quote }}
+        # BundleDeployment resource filters
+        - name: FLEET_MONITOR_BUNDLEDEPLOYMENT_RESOURCE_FILTER_NAMESPACE
+          value: {{ .Values.logging.bundleDeployment.resourceFilter.namespace | quote }}
+        - name: FLEET_MONITOR_BUNDLEDEPLOYMENT_RESOURCE_FILTER_NAME
+          value: {{ .Values.logging.bundleDeployment.resourceFilter.name | quote }}
         # BundleDeployment event filters
         - name: FLEET_MONITOR_BD_EVENT_GENERATION_CHANGE
           value: {{ .Values.logging.bundleDeployment.eventFilters.generationChange | quote }}
@@ -126,6 +136,11 @@ spec:
           value: {{ .Values.logging.bundleDeployment.eventFilters.create | quote }}
         - name: FLEET_MONITOR_BD_EVENT_TRIGGERED_BY
           value: {{ .Values.logging.bundleDeployment.eventFilters.triggeredBy | quote }}
+        # Cluster resource filters
+        - name: FLEET_MONITOR_CLUSTER_RESOURCE_FILTER_NAMESPACE
+          value: {{ .Values.logging.cluster.resourceFilter.namespace | quote }}
+        - name: FLEET_MONITOR_CLUSTER_RESOURCE_FILTER_NAME
+          value: {{ .Values.logging.cluster.resourceFilter.name | quote }}
         # Cluster event filters
         - name: FLEET_MONITOR_CLUSTER_EVENT_GENERATION_CHANGE
           value: {{ .Values.logging.cluster.eventFilters.generationChange | quote }}
@@ -145,6 +160,11 @@ spec:
           value: {{ .Values.logging.cluster.eventFilters.create | quote }}
         - name: FLEET_MONITOR_CLUSTER_EVENT_TRIGGERED_BY
           value: {{ .Values.logging.cluster.eventFilters.triggeredBy | quote }}
+        # GitRepo resource filters
+        - name: FLEET_MONITOR_GITREPO_RESOURCE_FILTER_NAMESPACE
+          value: {{ .Values.logging.gitRepo.resourceFilter.namespace | quote }}
+        - name: FLEET_MONITOR_GITREPO_RESOURCE_FILTER_NAME
+          value: {{ .Values.logging.gitRepo.resourceFilter.name | quote }}
         # GitRepo event filters
         - name: FLEET_MONITOR_GITREPO_EVENT_GENERATION_CHANGE
           value: {{ .Values.logging.gitRepo.eventFilters.generationChange | quote }}
@@ -164,6 +184,11 @@ spec:
           value: {{ .Values.logging.gitRepo.eventFilters.create | quote }}
         - name: FLEET_MONITOR_GITREPO_EVENT_TRIGGERED_BY
           value: {{ .Values.logging.gitRepo.eventFilters.triggeredBy | quote }}
+        # HelmApp resource filters
+        - name: FLEET_MONITOR_HELMAPP_RESOURCE_FILTER_NAMESPACE
+          value: {{ .Values.logging.helmApp.resourceFilter.namespace | quote }}
+        - name: FLEET_MONITOR_HELMAPP_RESOURCE_FILTER_NAME
+          value: {{ .Values.logging.helmApp.resourceFilter.name | quote }}
         # HelmApp event filters
         - name: FLEET_MONITOR_HELMAPP_EVENT_GENERATION_CHANGE
           value: {{ .Values.logging.helmApp.eventFilters.generationChange | quote }}

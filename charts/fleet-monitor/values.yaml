@@ -1,6 +1,6 @@
 image:
-  repository: 0xavi0/fleet-monitor
-  tag: 0.0.1
+  repository: rancher/fleet-monitor
+  tag: dev
   imagePullPolicy: IfNotPresent
 
 # Namespace to watch
@@ -70,6 +70,13 @@ logging:
   # Bundle controller logging
   bundle:
     detailed: true  # true = detailed logs, false = summary only
+
+    # Resource filter (optional) - filter which resources to monitor
+    # Empty strings match all resources (backwards compatible)
+    resourceFilter:
+      namespace: ""  # Regular expression for namespace matching (e.g., "^fleet-local$")
+      name: ""       # Regular expression for name matching (e.g., "^test-.*")
+
     eventFilters:
       generationChange: false
       statusChange: false
@@ -83,7 +90,12 @@ logging:
 
   # BundleDeployment controller logging
   bundleDeployment:
-    detailed: true
+    detailed: false
+
+    resourceFilter:
+      namespace: ""
+      name: ""
+
     eventFilters:
       generationChange: false
       statusChange: false
@@ -97,13 +109,18 @@ logging:
 
   # Cluster controller logging
   cluster:
-    detailed: true
+    detailed: false
+
+    resourceFilter:
+      namespace: ""
+      name: ""
+
     eventFilters:
       generationChange: false
       statusChange: false
       annotationChange: false
       labelChange: false
-      resourceVersionChange: true
+      resourceVersionChange: false
       deletion: false
       notFound: false
       create: false
@@ -112,6 +129,11 @@ logging:
   # GitRepo controller logging
   gitRepo:
     detailed: false
+
+    resourceFilter:
+      namespace: ""
+      name: ""
+
     eventFilters:
       generationChange: false
       statusChange: false
@@ -126,6 +148,11 @@ logging:
   # HelmApp controller logging
   helmApp:
     detailed: false
+
+    resourceFilter:
+      namespace: ""
+      name: ""
+
     eventFilters:
       generationChange: false
       statusChange: false

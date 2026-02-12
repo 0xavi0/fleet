@@ -19,6 +19,7 @@ rules:
   resources:
   - bundles
   - bundledeployments
+  - bundlenamespacemappings
   - clusters
   - clustergroups
   - gitrepos

@@ -28,8 +28,9 @@ type HelmAppMonitorReconciler struct {
 	cache *ObjectCache
 
 	// Per-controller logging mode
-	DetailedLogs bool
-	EventFilters EventTypeFilters
+	DetailedLogs   bool
+	EventFilters   EventTypeFilters
+	ResourceFilter *ResourceFilter
 }
 
 // SetupWithManager sets up the controller - IDENTICAL to HelmAppReconciler.SetupWithManager
@@ -56,6 +57,11 @@ func (r *HelmAppMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // Reconcile monitors HelmApp reconciliation events
 func (r *HelmAppMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	// Check resource filter - skip if resource doesn't match
+	if !r.ResourceFilter.Matches(req.Namespace, req.Name) {
+		return ctrl.Result{}, nil
+	}
+
 	logger := log.FromContext(ctx).WithName("helmapp-monitor")
 	logger = logger.WithValues(
 		"helmapp", req.NamespacedName.String(),

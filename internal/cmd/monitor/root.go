@@ -26,11 +26,11 @@ type FleetMonitor struct {
 	ShardID    string `usage:"only monitor resources labeled with a specific shard ID" name:"shard-id"`
 
 	// Controller toggles
-	EnableBundleMonitor           bool `usage:"Enable bundle monitoring" env:"ENABLE_BUNDLE_MONITOR" default:"true"`
-	EnableBundleDeploymentMonitor bool `usage:"Enable bundledeployment monitoring" env:"ENABLE_BUNDLEDEPLOYMENT_MONITOR" default:"true"`
-	EnableClusterMonitor          bool `usage:"Enable cluster monitoring" env:"ENABLE_CLUSTER_MONITOR" default:"true"`
-	EnableGitRepoMonitor          bool `usage:"Enable gitrepo monitoring" env:"ENABLE_GITREPO_MONITOR" default:"true"`
-	EnableHelmAppMonitor          bool `usage:"Enable helmapp monitoring" env:"ENABLE_HELMAPP_MONITOR" default:"true"`
+	EnableBundleMonitor           bool `usage:"Enable bundle monitoring" env:"ENABLE_BUNDLE_MONITOR"`
+	EnableBundleDeploymentMonitor bool `usage:"Enable bundledeployment monitoring" env:"ENABLE_BUNDLEDEPLOYMENT_MONITOR"`
+	EnableClusterMonitor          bool `usage:"Enable cluster monitoring" env:"ENABLE_CLUSTER_MONITOR"`
+	EnableGitRepoMonitor          bool `usage:"Enable gitrepo monitoring" env:"ENABLE_GITREPO_MONITOR"`
+	EnableHelmAppMonitor          bool `usage:"Enable helmapp monitoring" env:"ENABLE_HELMAPP_MONITOR"`
 
 	// Per-controller logging modes
 	BundleDetailedLogs           bool   `usage:"Enable detailed logging for Bundle controller" env:"FLEET_MONITOR_BUNDLE_DETAILED" default:"false"`
@@ -189,6 +189,13 @@ func (f *FleetMonitor) Run(cmd *cobra.Command, args []string) error {
 		return defaultValue
 	}
 
+	// Parse controller enable flags
+	enableBundle := parseBoolEnv("ENABLE_BUNDLE_MONITOR", f.EnableBundleMonitor)
+	enableBundleDeployment := parseBoolEnv("ENABLE_BUNDLEDEPLOYMENT_MONITOR", f.EnableBundleDeploymentMonitor)
+	enableCluster := parseBoolEnv("ENABLE_CLUSTER_MONITOR", f.EnableClusterMonitor)
+	enableGitRepo := parseBoolEnv("ENABLE_GITREPO_MONITOR", f.EnableGitRepoMonitor)
+	enableHelmApp := parseBoolEnv("ENABLE_HELMAPP_MONITOR", f.EnableHelmAppMonitor)
+
 	bundleDetailed := parseBoolEnv("FLEET_MONITOR_BUNDLE_DETAILED", f.BundleDetailedLogs)
 	bundleDeploymentDetailed := parseBoolEnv("FLEET_MONITOR_BUNDLEDEPLOYMENT_DETAILED", f.BundleDeploymentDetailedLogs)
 	clusterDetailed := parseBoolEnv("FLEET_MONITOR_CLUSTER_DETAILED", f.ClusterDetailedLogs)
@@ -256,6 +263,32 @@ func (f *FleetMonitor) Run(cmd *cobra.Command, args []string) error {
 		TriggeredBy:           parseBoolEnv("FLEET_MONITOR_HELMAPP_EVENT_TRIGGERED_BY", f.HelmAppEventFilterTriggeredBy),
 	}
 
+	// Parse resource filters for each controller
+	bundleResourceFilter := &reconciler.ResourceFilter{
+		NamespacePattern: os.Getenv("FLEET_MONITOR_BUNDLE_RESOURCE_FILTER_NAMESPACE"),
+		NamePattern:      os.Getenv("FLEET_MONITOR_BUNDLE_RESOURCE_FILTER_NAME"),
+	}
+
+	bundleDeploymentResourceFilter := &reconciler.ResourceFilter{
+		NamespacePattern: os.Getenv("FLEET_MONITOR_BUNDLEDEPLOYMENT_RESOURCE_FILTER_NAMESPACE"),
+		NamePattern:      os.Getenv("FLEET_MONITOR_BUNDLEDEPLOYMENT_RESOURCE_FILTER_NAME"),
+	}
+
+	clusterResourceFilter := &reconciler.ResourceFilter{
+		NamespacePattern: os.Getenv("FLEET_MONITOR_CLUSTER_RESOURCE_FILTER_NAMESPACE"),
+		NamePattern:      os.Getenv("FLEET_MONITOR_CLUSTER_RESOURCE_FILTER_NAME"),
+	}
+
+	gitRepoResourceFilter := &reconciler.ResourceFilter{
+		NamespacePattern: os.Getenv("FLEET_MONITOR_GITREPO_RESOURCE_FILTER_NAMESPACE"),
+		NamePattern:      os.Getenv("FLEET_MONITOR_GITREPO_RESOURCE_FILTER_NAME"),
+	}
+
+	helmAppResourceFilter := &reconciler.ResourceFilter{
+		NamespacePattern: os.Getenv("FLEET_MONITOR_HELMAPP_RESOURCE_FILTER_NAMESPACE"),
+		NamePattern:      os.Getenv("FLEET_MONITOR_HELMAPP_RESOURCE_FILTER_NAME"),
+	}
+
 	// Log the parsed configuration for debugging
 	setupLog.Info("parsed per-controller logging configuration",
 		"bundle", bundleDetailed,
@@ -273,34 +306,39 @@ func (f *FleetMonitor) Run(cmd *cobra.Command, args []string) error {
 	}
 
 	monitorOpts := MonitorOptions{
-		EnableBundle:           f.EnableBundleMonitor,
-		EnableBundleDeployment: f.EnableBundleDeploymentMonitor,
-		EnableCluster:          f.EnableClusterMonitor,
-		EnableGitRepo:          f.EnableGitRepoMonitor,
-		EnableHelmApp:          f.EnableHelmAppMonitor,
+		EnableBundle:           enableBundle,
+		EnableBundleDeployment: enableBundleDeployment,
+		EnableCluster:          enableCluster,
+		EnableGitRepo:          enableGitRepo,
+		EnableHelmApp:          enableHelmApp,
 		Workers:                workersOpts,
 
 		// Per-controller logging configuration
 		ControllerLogging: ControllerLoggingConfig{
 			Bundle: ControllerLogConfig{
-				Detailed:     bundleDetailed,
-				EventFilters: bundleEventFilters,
+				Detailed:       bundleDetailed,
+				EventFilters:   bundleEventFilters,
+				ResourceFilter: bundleResourceFilter,
 			},
 			BundleDeployment: ControllerLogConfig{
-				Detailed:     bundleDeploymentDetailed,
-				EventFilters: bundleDeploymentEventFilters,
+				Detailed:       bundleDeploymentDetailed,
+				EventFilters:   bundleDeploymentEventFilters,
+				ResourceFilter: bundleDeploymentResourceFilter,
 			},
 			Cluster: ControllerLogConfig{
-				Detailed:     clusterDetailed,
-				EventFilters: clusterEventFilters,
+				Detailed:       clusterDetailed,
+				EventFilters:   clusterEventFilters,
+				ResourceFilter: clusterResourceFilter,
 			},
 			GitRepo: ControllerLogConfig{
-				Detailed:     gitRepoDetailed,
-				EventFilters: gitRepoEventFilters,
+				Detailed:       gitRepoDetailed,
+				EventFilters:   gitRepoEventFilters,
+				ResourceFilter: gitRepoResourceFilter,
 			},
 			HelmApp: ControllerLogConfig{
-				Detailed:     helmAppDetailed,
-				EventFilters: helmAppEventFilters,
+				Detailed:       helmAppDetailed,
+				EventFilters:   helmAppEventFilters,
+				ResourceFilter: helmAppResourceFilter,
 			},
 		},
 

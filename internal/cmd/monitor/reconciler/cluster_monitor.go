@@ -34,8 +34,9 @@ type ClusterMonitorReconciler struct {
 	cache *ObjectCache
 
 	// Per-controller logging mode
-	DetailedLogs bool
-	EventFilters EventTypeFilters
+	DetailedLogs   bool
+	EventFilters   EventTypeFilters
+	ResourceFilter *ResourceFilter
 }
 
 // SetupWithManager sets up the controller with the Manager - IDENTICAL to ClusterReconciler.SetupWithManager
@@ -91,6 +92,11 @@ func (r *ClusterMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // Reconcile monitors cluster reconciliation events (read-only)
 func (r *ClusterMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	// Check resource filter - skip if resource doesn't match
+	if !r.ResourceFilter.Matches(req.Namespace, req.Name) {
+		return ctrl.Result{}, nil
+	}
+
 	logger := log.FromContext(ctx).WithName("cluster-monitor")
 	logger = logger.WithValues(
 		"cluster", req.NamespacedName.String(),
@@ -148,6 +154,11 @@ func (r *ClusterMonitorReconciler) mapBundleDeploymentToCluster(ctx context.Cont
 	ns := clusterNS.Annotations[fleet.ClusterNamespaceAnnotation]
 	name := clusterNS.Annotations[fleet.ClusterAnnotation]
 	if ns == "" || name == "" {
+		return nil
+	}
+
+	// Check resource filter before logging
+	if !r.ResourceFilter.Matches(ns, name) {
 		return nil
 	}
 

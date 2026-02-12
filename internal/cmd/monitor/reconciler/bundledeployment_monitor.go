@@ -27,8 +27,9 @@ type BundleDeploymentMonitorReconciler struct {
 	cache *ObjectCache
 
 	// Per-controller logging mode
-	DetailedLogs bool
-	EventFilters EventTypeFilters
+	DetailedLogs   bool
+	EventFilters   EventTypeFilters
+	ResourceFilter *ResourceFilter
 }
 
 // SetupWithManager sets up the controller - IDENTICAL to BundleDeploymentReconciler.SetupWithManager
@@ -46,6 +47,11 @@ func (r *BundleDeploymentMonitorReconciler) SetupWithManager(mgr ctrl.Manager) e
 
 // Reconcile monitors bundledeployment reconciliation events (READ-ONLY)
 func (r *BundleDeploymentMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	// Check resource filter - skip if resource doesn't match
+	if !r.ResourceFilter.Matches(req.Namespace, req.Name) {
+		return ctrl.Result{}, nil
+	}
+
 	logger := log.FromContext(ctx).WithName("bundledeployment-monitor")
 	logger = logger.WithValues(
 		"bundledeployment", req.NamespacedName.String(),

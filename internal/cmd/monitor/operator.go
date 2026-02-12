@@ -29,8 +29,9 @@ func init() {
 
 // ControllerLogConfig holds logging configuration for a single controller
 type ControllerLogConfig struct {
-	Detailed     bool                         // true = detailed logs, false = summary only
-	EventFilters reconciler.EventTypeFilters // Which event types to show in detailed mode
+	Detailed       bool                            // true = detailed logs, false = summary only
+	EventFilters   reconciler.EventTypeFilters     // Which event types to show in detailed mode
+	ResourceFilter *reconciler.ResourceFilter      // Which resources to monitor (namespace/name patterns)
 }
 
 // ControllerLoggingConfig holds logging configuration for all controllers
@@ -66,6 +67,11 @@ func start(
 	monitorOpts MonitorOptions,
 	shardID string,
 ) error {
+	// Compile resource filters and check for errors
+	if err := compileResourceFilters(&monitorOpts.ControllerLogging); err != nil {
+		return fmt.Errorf("invalid resource filter configuration: %w", err)
+	}
+
 	setupLog.Info("starting fleet monitor",
 		"namespace", systemNamespace,
 		"shardID", shardID,
@@ -82,6 +88,9 @@ func start(
 		"summaryInterval", monitorOpts.SummaryInterval,
 		"summaryReset", monitorOpts.SummaryReset,
 	)
+
+	// Log resource filter configuration if any filters are set
+	logResourceFilters(&monitorOpts.ControllerLogging)
 
 	// Start summary printer (always runs, prints stats for all controllers)
 	go startSummaryPrinter(ctx, monitorOpts.SummaryInterval, monitorOpts.SummaryReset)
@@ -113,12 +122,14 @@ func start(
 	// Register enabled monitor controllers with per-controller logging mode
 	if monitorOpts.EnableBundle {
 		if err := (&reconciler.BundleMonitorReconciler{
-			Client:       mgr.GetClient(),
-			Scheme:       mgr.GetScheme(),
-			ShardID:      shardID,
-			Workers:      monitorOpts.Workers.Bundle,
-			DetailedLogs: monitorOpts.ControllerLogging.Bundle.Detailed,
-			EventFilters: monitorOpts.ControllerLogging.Bundle.EventFilters,
+			Client:         mgr.GetClient(),
+			Scheme:         mgr.GetScheme(),
+			ShardID:        shardID,
+			Workers:        monitorOpts.Workers.Bundle,
+			Query:          reconciler.NewBundleQuery(mgr.GetClient()),
+			DetailedLogs:   monitorOpts.ControllerLogging.Bundle.Detailed,
+			EventFilters:   monitorOpts.ControllerLogging.Bundle.EventFilters,
+			ResourceFilter: monitorOpts.ControllerLogging.Bundle.ResourceFilter,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create monitor controller", "controller", "Bundle")
 			return err
@@ -128,12 +139,13 @@ func start(
 
 	if monitorOpts.EnableCluster {
 		if err := (&reconciler.ClusterMonitorReconciler{
-			Client:       mgr.GetClient(),
-			Scheme:       mgr.GetScheme(),
-			ShardID:      shardID,
-			Workers:      monitorOpts.Workers.Cluster,
-			DetailedLogs: monitorOpts.ControllerLogging.Cluster.Detailed,
-			EventFilters: monitorOpts.ControllerLogging.Cluster.EventFilters,
+			Client:         mgr.GetClient(),
+			Scheme:         mgr.GetScheme(),
+			ShardID:        shardID,
+			Workers:        monitorOpts.Workers.Cluster,
+			DetailedLogs:   monitorOpts.ControllerLogging.Cluster.Detailed,
+			EventFilters:   monitorOpts.ControllerLogging.Cluster.EventFilters,
+			ResourceFilter: monitorOpts.ControllerLogging.Cluster.ResourceFilter,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create monitor controller", "controller", "Cluster")
 			return err
@@ -143,12 +155,13 @@ func start(
 
 	if monitorOpts.EnableBundleDeployment {
 		if err := (&reconciler.BundleDeploymentMonitorReconciler{
-			Client:       mgr.GetClient(),
-			Scheme:       mgr.GetScheme(),
-			ShardID:      shardID,
-			Workers:      monitorOpts.Workers.BundleDeployment,
-			DetailedLogs: monitorOpts.ControllerLogging.BundleDeployment.Detailed,
-			EventFilters: monitorOpts.ControllerLogging.BundleDeployment.EventFilters,
+			Client:         mgr.GetClient(),
+			Scheme:         mgr.GetScheme(),
+			ShardID:        shardID,
+			Workers:        monitorOpts.Workers.BundleDeployment,
+			DetailedLogs:   monitorOpts.ControllerLogging.BundleDeployment.Detailed,
+			EventFilters:   monitorOpts.ControllerLogging.BundleDeployment.EventFilters,
+			ResourceFilter: monitorOpts.ControllerLogging.BundleDeployment.ResourceFilter,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create monitor controller", "controller", "BundleDeployment")
 			return err
@@ -158,12 +171,13 @@ func start(
 
 	if monitorOpts.EnableGitRepo {
 		if err := (&reconciler.GitRepoMonitorReconciler{
-			Client:       mgr.GetClient(),
-			Scheme:       mgr.GetScheme(),
-			ShardID:      shardID,
-			Workers:      monitorOpts.Workers.GitRepo,
-			DetailedLogs: monitorOpts.ControllerLogging.GitRepo.Detailed,
-			EventFilters: monitorOpts.ControllerLogging.GitRepo.EventFilters,
+			Client:         mgr.GetClient(),
+			Scheme:         mgr.GetScheme(),
+			ShardID:        shardID,
+			Workers:        monitorOpts.Workers.GitRepo,
+			DetailedLogs:   monitorOpts.ControllerLogging.GitRepo.Detailed,
+			EventFilters:   monitorOpts.ControllerLogging.GitRepo.EventFilters,
+			ResourceFilter: monitorOpts.ControllerLogging.GitRepo.ResourceFilter,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create monitor controller", "controller", "GitRepo")
 			return err
@@ -173,12 +187,13 @@ func start(
 
 	if monitorOpts.EnableHelmApp {
 		if err := (&reconciler.HelmAppMonitorReconciler{
-			Client:       mgr.GetClient(),
-			Scheme:       mgr.GetScheme(),
-			ShardID:      shardID,
-			Workers:      monitorOpts.Workers.HelmApp,
-			DetailedLogs: monitorOpts.ControllerLogging.HelmApp.Detailed,
-			EventFilters: monitorOpts.ControllerLogging.HelmApp.EventFilters,
+			Client:         mgr.GetClient(),
+			Scheme:         mgr.GetScheme(),
+			ShardID:        shardID,
+			Workers:        monitorOpts.Workers.HelmApp,
+			DetailedLogs:   monitorOpts.ControllerLogging.HelmApp.Detailed,
+			EventFilters:   monitorOpts.ControllerLogging.HelmApp.EventFilters,
+			ResourceFilter: monitorOpts.ControllerLogging.HelmApp.ResourceFilter,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create monitor controller", "controller", "HelmApp")
 			return err
@@ -200,6 +215,46 @@ func logMode(detailed bool) string {
 		return "detailed"
 	}
 	return "summary"
+}
+
+// compileResourceFilters compiles all resource filter regex patterns
+// Returns error if any pattern is invalid
+func compileResourceFilters(config *ControllerLoggingConfig) error {
+	if err := config.Bundle.ResourceFilter.Compile(); err != nil {
+		return fmt.Errorf("Bundle resource filter: %w", err)
+	}
+	if err := config.BundleDeployment.ResourceFilter.Compile(); err != nil {
+		return fmt.Errorf("BundleDeployment resource filter: %w", err)
+	}
+	if err := config.Cluster.ResourceFilter.Compile(); err != nil {
+		return fmt.Errorf("Cluster resource filter: %w", err)
+	}
+	if err := config.GitRepo.ResourceFilter.Compile(); err != nil {
+		return fmt.Errorf("GitRepo resource filter: %w", err)
+	}
+	if err := config.HelmApp.ResourceFilter.Compile(); err != nil {
+		return fmt.Errorf("HelmApp resource filter: %w", err)
+	}
+	return nil
+}
+
+// logResourceFilters logs resource filter configuration for debugging
+func logResourceFilters(config *ControllerLoggingConfig) {
+	logFilter := func(controller string, filter *reconciler.ResourceFilter) {
+		if filter != nil && (filter.NamespacePattern != "" || filter.NamePattern != "") {
+			setupLog.Info("resource filter configured",
+				"controller", controller,
+				"namespacePattern", filter.NamespacePattern,
+				"namePattern", filter.NamePattern,
+			)
+		}
+	}
+
+	logFilter("Bundle", config.Bundle.ResourceFilter)
+	logFilter("BundleDeployment", config.BundleDeployment.ResourceFilter)
+	logFilter("Cluster", config.Cluster.ResourceFilter)
+	logFilter("GitRepo", config.GitRepo.ResourceFilter)
+	logFilter("HelmApp", config.HelmApp.ResourceFilter)
 }
 
 // startSummaryPrinter periodically prints statistics summary
