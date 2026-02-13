@@ -8,7 +8,7 @@ namespace: cattle-fleet-system
 
 # Which controllers to enable
 controllers:
-  bundle: true
+  bundle: false
   bundledeployment: false
   cluster: false
   gitrepo: false
@@ -69,7 +69,7 @@ extraEnv: []
 logging:
   # Bundle controller logging
   bundle:
-    detailed: true  # true = detailed logs, false = summary only
+    detailed: false  # true = detailed logs, false = summary only
 
     # Resource filter (optional) - filter which resources to monitor
     # Empty strings match all resources (backwards compatible)
@@ -82,7 +82,7 @@ logging:
       statusChange: false
       annotationChange: false
       labelChange: false
-      resourceVersionChange: true
+      resourceVersionChange: false
       deletion: false
       notFound: false
       create: false

@@ -3,8 +3,6 @@
 package reconciler
 
 import (
-	"encoding/json"
-
 	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -65,24 +63,24 @@ func logStatusChange(logger logr.Logger, detailedLogs bool, eventFilters interfa
 
 	// Only log details if detailed mode enabled AND event type is enabled
 	if detailedLogs && eventFilters.ShouldLog(EventTypeStatusChange) {
-		oldJSON, err := json.MarshalIndent(oldStatus, "", "  ")
-		if err != nil {
-			logger.Error(err, "Failed to marshal old status")
-			oldJSON = []byte("{}")
-		}
+		// oldJSON, err := json.MarshalIndent(oldStatus, "", "  ")
+		// if err != nil {
+		// 	logger.Error(err, "Failed to marshal old status")
+		// 	oldJSON = []byte("{}")
+		// }
 
-		newJSON, err := json.MarshalIndent(newStatus, "", "  ")
-		if err != nil {
-			logger.Error(err, "Failed to marshal new status")
-			newJSON = []byte("{}")
-		}
+		// newJSON, err := json.MarshalIndent(newStatus, "", "  ")
+		// if err != nil {
+		// 	logger.Error(err, "Failed to marshal new status")
+		// 	newJSON = []byte("{}")
+		// }
 
 		diff := cmp.Diff(oldStatus, newStatus)
 
 		logger.Info("Status changed",
 			"event", "status-change",
-			"oldStatus", string(oldJSON),
-			"newStatus", string(newJSON),
+			// "oldStatus", string(oldJSON),
+			// "newStatus", string(newJSON),
 			"diff", diff,
 		)
 	}
