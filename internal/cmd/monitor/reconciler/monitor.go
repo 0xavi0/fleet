@@ -3,9 +3,14 @@
 package reconciler
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
 	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"
 	"k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -122,12 +127,13 @@ func logResourceVersionChangeWithMetadata(logger logr.Logger, detailedLogs bool,
 			diffs = append(diffs, "OwnerReferences:\n"+diff)
 		}
 
-		// Check managed fields (common with Server-Side Apply)
-		oldManaged := oldObj.GetManagedFields()
-		newManaged := newObj.GetManagedFields()
-		if !equality.Semantic.DeepEqual(oldManaged, newManaged) {
+		// Check managed fields (common with Server-Side Apply).
+		// Use managedFieldsDiff as the sole detector: equality.Semantic.DeepEqual
+		// on slices is order-sensitive, so a mere reordering of SSA entries would
+		// trigger a false "changed" detection while producing an empty diff.
+		if managedDiff := managedFieldsDiff(oldObj.GetManagedFields(), newObj.GetManagedFields()); managedDiff != "" {
 			metadataChanges = append(metadataChanges, "managedFields")
-			// Don't include full diff for managedFields as it's very verbose
+			diffs = append(diffs, "ManagedFields:\n"+managedDiff)
 		}
 
 		reason := "cache sync or unknown metadata update"
@@ -257,4 +263,82 @@ func logCreate(logger logr.Logger, detailedLogs bool, eventFilters interface{ Sh
 			"resourceVersion", resourceVersion,
 		)
 	}
+}
+
+// managedFieldsDiff returns a human-readable summary of what changed in managedFields.
+// It identifies which field managers were added, removed, or changed, and for changed
+// managers it shows a diff of their owned fields (parsed from FieldsV1 JSON).
+func managedFieldsDiff(old, new []metav1.ManagedFieldsEntry) string {
+	type entryKey struct {
+		Manager     string
+		Operation   metav1.ManagedFieldsOperationType
+		Subresource string
+	}
+
+	oldMap := make(map[entryKey]metav1.ManagedFieldsEntry, len(old))
+	for _, e := range old {
+		oldMap[entryKey{e.Manager, e.Operation, e.Subresource}] = e
+	}
+
+	newMap := make(map[entryKey]metav1.ManagedFieldsEntry, len(new))
+	for _, e := range new {
+		newMap[entryKey{e.Manager, e.Operation, e.Subresource}] = e
+	}
+
+	var added, removed, changed []string
+	var fieldDiffs []string
+
+	for k, newEntry := range newMap {
+		oldEntry, exists := oldMap[k]
+		if !exists {
+			added = append(added, fmt.Sprintf("%s(%s)", k.Manager, k.Operation))
+			continue
+		}
+		if !equality.Semantic.DeepEqual(newEntry, oldEntry) {
+			label := fmt.Sprintf("%s(%s)", k.Manager, k.Operation)
+			changed = append(changed, label)
+			diff := diffFieldsV1(oldEntry.FieldsV1, newEntry.FieldsV1)
+			if diff != "" {
+				fieldDiffs = append(fieldDiffs, fmt.Sprintf("[%s]:\n%s", label, diff))
+			}
+		}
+	}
+
+	for k := range oldMap {
+		if _, exists := newMap[k]; !exists {
+			removed = append(removed, fmt.Sprintf("%s(%s)", k.Manager, k.Operation))
+		}
+	}
+
+	var sb strings.Builder
+	if len(added) > 0 {
+		sb.WriteString("added: " + strings.Join(added, ", ") + "\n")
+	}
+	if len(removed) > 0 {
+		sb.WriteString("removed: " + strings.Join(removed, ", ") + "\n")
+	}
+	if len(changed) > 0 {
+		sb.WriteString("changed: " + strings.Join(changed, ", ") + "\n")
+	}
+	for _, fd := range fieldDiffs {
+		sb.WriteString(fd + "\n")
+	}
+
+	return sb.String()
+}
+
+// diffFieldsV1 diffs two FieldsV1 values by parsing their raw JSON.
+// Falls back to an empty string if both are nil or identical.
+func diffFieldsV1(old, new *metav1.FieldsV1) string {
+	if old == nil && new == nil {
+		return ""
+	}
+	var oldParsed, newParsed interface{}
+	if old != nil {
+		_ = json.Unmarshal(old.Raw, &oldParsed)
+	}
+	if new != nil {
+		_ = json.Unmarshal(new.Raw, &newParsed)
+	}
+	return cmp.Diff(oldParsed, newParsed)
 }

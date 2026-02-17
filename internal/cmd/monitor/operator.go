@@ -29,9 +29,9 @@ func init() {
 
 // ControllerLogConfig holds logging configuration for a single controller
 type ControllerLogConfig struct {
-	Detailed       bool                            // true = detailed logs, false = summary only
-	EventFilters   reconciler.EventTypeFilters     // Which event types to show in detailed mode
-	ResourceFilter *reconciler.ResourceFilter      // Which resources to monitor (namespace/name patterns)
+	Detailed       bool                        // true = detailed logs, false = summary only
+	EventFilters   reconciler.EventTypeFilters // Which event types to show in detailed mode
+	ResourceFilter *reconciler.ResourceFilter  // Which resources to monitor (namespace/name patterns)
 }
 
 // ControllerLoggingConfig holds logging configuration for all controllers

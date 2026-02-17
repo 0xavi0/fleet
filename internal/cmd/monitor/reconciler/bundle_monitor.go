@@ -124,6 +124,11 @@ func (r *BundleMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 				return requests
 			}),
+			// builder.WithPredicates(predicate.Or(
+			// 	predicate.GenerationChangedPredicate{},
+			// 	predicate.AnnotationChangedPredicate{},
+			// 	predicate.LabelChangedPredicate{},
+			// )),
 			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
 		).
 		WithEventFilter(sharding.FilterByShardID(r.ShardID)).
