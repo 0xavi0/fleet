@@ -80,6 +80,7 @@ func (h *Helm) install(ctx context.Context, bundleID string, manifest *manifest.
 	if err != nil {
 		return nil, err
 	}
+	fmt.Printf("XGMTEST ---- Helm install/upgrade with values: %#v\n", values)
 
 	cfg, err := h.getCfg(ctx, defaultNamespace, options.ServiceAccount)
 	if err != nil {
@@ -228,10 +229,13 @@ func (h *Helm) install(ctx context.Context, bundleID string, manifest *manifest.
 }
 
 func (h *Helm) mustUninstall(cfg *action.Configuration, releaseName string) (bool, error) {
+	fmt.Printf("XGMTEST ---- mustUninstall: checking if release %s must be uninstalled\n", releaseName)
 	r, err := cfg.Releases.Last(releaseName)
 	if err != nil {
+		fmt.Printf("XGMTEST ---- mustUninstall: error getting last release: %v, returning false\n", err)
 		return false, nil
 	}
+	fmt.Printf("XGMTEST ---- mustUninstall: last release status: %s\n", r.Info.Status)
 	return r.Info.Status == release.StatusUninstalling, nil
 }
 
@@ -240,6 +244,7 @@ func (h *Helm) mustInstall(cfg *action.Configuration, releaseName string) (bool,
 	if err != nil && strings.Contains(err.Error(), "has no deployed releases") {
 		_, err := cfg.Releases.Last(releaseName)
 		if err == nil {
+			fmt.Printf("XGMTEST ---- mustInstall: release exists but has no deployed releases, must install\n")
 			// There is a release, but not deployed (e.g., failed install/upgrade)
 			return false, nil
 		}
@@ -266,6 +271,7 @@ func (h *Helm) ensureForceOnOrphanedPendingInstall(ctx context.Context, cfg *act
 		return err
 	}
 
+	fmt.Printf("XGMTEST ---- ensureForceOnOrphanedPendingInstall: last release version: %d, status: %s\n", lastRelease.Version, lastRelease.Info.Status)
 	// Only handle pending-install status
 	if lastRelease.Info.Status != release.StatusPendingInstall {
 		return nil
@@ -327,6 +333,7 @@ func (h *Helm) getValues(ctx context.Context, options fleet.BundleDeploymentOpti
 	var values map[string]interface{}
 	if options.Helm.Values != nil {
 		values = options.Helm.Values.Data
+		fmt.Printf("XGMTEST ---- Helm values in getValues(): %#v\n", values)
 	}
 
 	// avoid the possibility of returning a nil map
@@ -360,6 +367,7 @@ func (h *Helm) getValues(ctx context.Context, options fleet.BundleDeploymentOpti
 				}
 			}
 			if tempValues != nil {
+				fmt.Printf("XGMTEST ---- tempValues in getValues() ConfigMap: %#v\n", tempValues)
 				values = mergeValues(values, tempValues)
 				tempValues = nil
 			}
@@ -388,6 +396,7 @@ func (h *Helm) getValues(ctx context.Context, options fleet.BundleDeploymentOpti
 				}
 			}
 			if tempValues != nil {
+				fmt.Printf("XGMTEST ---- tempValues in getValues() Secret: %#v\n", tempValues)
 				values = mergeValues(values, tempValues)
 			}
 		}

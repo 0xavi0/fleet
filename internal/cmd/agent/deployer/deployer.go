@@ -116,6 +116,9 @@ func (d *Deployer) DeployBundle(
 // If force is true, checks on whether the bundle deployment exists will be skipped, leading to the bundle deployment
 // being updated even if its deployment ID has not changed.
 func (d *Deployer) helmdeploy(ctx context.Context, logger logr.Logger, bd *fleet.BundleDeployment, force bool) (string, error) {
+	fmt.Printf("XGMTEST ---- helmdeploy called with force: %v bd.Spec.DeploymentID: %s bd.Status.AppliedDeploymentID: %s\n", force, bd.Spec.DeploymentID, bd.Status.AppliedDeploymentID)
+	fmt.Printf("XGMTEST ---- bd.Spec.Options.Helm.Values: %#v\n", bd.Spec.Options.Helm.Values)
+	fmt.Printf("XGMTEST ---- bd.Spec.StagedOptions.Helm.Values: %#v\n", bd.Spec.StagedOptions.Helm.Values)
 	if !force && bd.Spec.DeploymentID == bd.Status.AppliedDeploymentID {
 		if ok, err := d.helm.EnsureInstalled(bd.Name, bd.Status.Release); err != nil {
 			return "", err
