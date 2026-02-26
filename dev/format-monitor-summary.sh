@@ -81,19 +81,24 @@ print_resource_table() {
     max_len=$((max_len + 2))
 
     # Print table header
-    printf "  %-${max_len}s %8s %8s %8s %8s\n" "RESOURCE" "CREATE" "STATUS" "RESVER" "EVENTS"
+    printf "  %-${max_len}s %8s %8s %8s %8s %8s %8s %8s %8s %8s\n" "RESOURCE" "CREATE" "DELETE" "N-FOUND" "STATUS" "GEN-CHG" "ANNOT" "LABEL" "RESVER" "EVENTS"
     local separator=$(printf '%*s' $max_len | tr ' ' '-')
-    printf "  %-${max_len}s %8s %8s %8s %8s\n" "$separator" "------" "------" "------" "------"
+    printf "  %-${max_len}s %8s %8s %8s %8s %8s %8s %8s %8s %8s\n" "$separator" "------" "------" "-------" "------" "-------" "-----" "-----" "------" "------"
 
     # Print each resource
     while IFS= read -r resource; do
         local create=$(echo "$data" | jq -r ".\"$resource\".create // 0")
+        local deletion=$(echo "$data" | jq -r ".\"$resource\".deletion // 0")
+        local not_found=$(echo "$data" | jq -r ".\"$resource\".\"not-found\" // 0")
         local status_change=$(echo "$data" | jq -r ".\"$resource\".\"status-change\" // 0")
+        local gen_change=$(echo "$data" | jq -r ".\"$resource\".\"generation-change\" // 0")
+        local annot_change=$(echo "$data" | jq -r ".\"$resource\".\"annotation-change\" // 0")
+        local label_change=$(echo "$data" | jq -r ".\"$resource\".\"label-change\" // 0")
         local resver_change=$(echo "$data" | jq -r ".\"$resource\".\"resourceversion-change\" // 0")
         local total_events=$(echo "$data" | jq -r ".\"$resource\".total_events // 0")
 
-        printf "  %-${max_len}s %8d %8d %8d %8d\n" \
-            "$resource" "$create" "$status_change" "$resver_change" "$total_events"
+        printf "  %-${max_len}s %8d %8d %8d %8d %8d %8d %8d %8d %8d\n" \
+            "$resource" "$create" "$deletion" "$not_found" "$status_change" "$gen_change" "$annot_change" "$label_change" "$resver_change" "$total_events"
 
         # Print triggered-by if present
         local triggered_by=$(echo "$data" | jq -r ".\"$resource\".\"triggered-by\" // null")
