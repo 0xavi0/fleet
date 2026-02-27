@@ -21,13 +21,24 @@ else
     input=$(cat)
 fi
 
-# Find all lines with "Fleet Monitor Summary" and take the last one
-json=$(echo "$input" | grep '"msg":"Fleet Monitor Summary"' | tail -1 | grep -o '{"level":"info".*}')
+# Find all lines with "Fleet Monitor Summary" and write to a temp file
+tmp_summaries=$(mktemp)
+trap 'rm -f "$tmp_summaries"' EXIT
+echo "$input" | grep '"msg":"Fleet Monitor Summary"' > "$tmp_summaries" || true
 
-if [ -z "$json" ]; then
+if [ ! -s "$tmp_summaries" ]; then
     echo "Error: No 'Fleet Monitor Summary' log line found in input" >&2
     exit 1
 fi
+
+# Extract first and last summary lines (using file to avoid SIGPIPE with pipefail)
+first_json=$(head -1 "$tmp_summaries" | grep -o '{"level":"info".*}')
+json=$(tail -1 "$tmp_summaries" | grep -o '{"level":"info".*}')
+
+# Calculate time range across all summaries
+first_ts=$(echo "$first_json" | jq -r '.summary.timestamp')
+last_ts=$(echo "$json" | jq -r '.summary.timestamp')
+summary_count=$(wc -l < "$tmp_summaries" | tr -d ' ')
 
 # Extract summary data
 summary=$(echo "$json" | jq -r '.msg')
@@ -117,4 +128,20 @@ while IFS= read -r resource_type; do
     print_resource_table "$resource_type"
 done <<< "$resource_types"
 
+echo "================================================================================"
+
+# Calculate and display time range
+if [ "$first_ts" != "$last_ts" ]; then
+    first_epoch=$(date -d "$first_ts" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${first_ts%%.*}" +%s 2>/dev/null)
+    last_epoch=$(date -d "$last_ts" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${last_ts%%.*}" +%s 2>/dev/null)
+    duration_s=$(( last_epoch - first_epoch ))
+    hours=$(( duration_s / 3600 ))
+    minutes=$(( (duration_s % 3600) / 60 ))
+    seconds=$(( duration_s % 60 ))
+    echo "  Time range:       $first_ts"
+    echo "                 -> $last_ts"
+    printf "  Duration:         %02dh %02dm %02ds  (%d summaries)\n" "$hours" "$minutes" "$seconds" "$summary_count"
+else
+    echo "  Time range:       $first_ts  (single summary)"
+fi
 echo "================================================================================"
