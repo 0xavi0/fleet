@@ -199,6 +199,7 @@ func clusterChangedPredicate() predicate.Funcs {
 func (r *BundleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithName("bundle")
 	ctx = log.IntoContext(ctx, logger)
+	logger.V(1).Info("XGMTEST - Reconciling bundle", "namespace", req.Namespace, "name", req.Name)
 
 	bundle := &fleet.Bundle{}
 	if err := r.Get(ctx, req.NamespacedName, bundle); err != nil {
@@ -210,17 +211,22 @@ func (r *BundleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			"gitrepo", bundle.Labels[fleet.RepoLabel],
 			"commit", bundle.Labels[fleet.CommitLabel],
 		)
+	} else {
+		logger.V(1).Info("XGMTEST - Bundle does not have gitrepo and commit labels, likely not created from a git source")
 	}
+	logger.V(1).Info("XGMTEST - Reconciling bundle, checking deletion timestamp and finalizer", "labels", bundle.Labels)
 
 	if userID := bundle.Labels[fleet.CreatedByUserIDLabel]; userID != "" {
 		logger = logger.WithValues("userID", userID)
 	}
 
 	if !bundle.DeletionTimestamp.IsZero() {
+		logger.V(1).Info("XGMTEST -Bundle has deletion timestamp, handling deletion")
 		return r.handleDelete(ctx, logger, req, bundle)
 	}
 
 	if err := r.ensureFinalizer(ctx, bundle); err != nil {
+		logger.V(1).Info("XGMTEST - Failed to ensure finalizer on bundle", "error", err)
 		return ctrl.Result{}, err
 	}
 
@@ -228,6 +234,7 @@ func (r *BundleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// Migration: Remove the obsolete created-by-display-name label if it exists
 	if err := r.removeDisplayNameLabel(ctx, bundle); err != nil {
+		logger.V(1).Info("XGMTEST - Failed to remove obsolete created-by-display-name label", "error", err)
 		return ctrl.Result{}, err
 	}
 
@@ -237,6 +244,8 @@ func (r *BundleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		bundle.Generation,
 		"observedGeneration",
 		bundle.Status.ObservedGeneration,
+		"valuesHash",
+		bundle.Spec.ValuesHash,
 	)
 
 	// The values secret is optional, e.g. for non-helm type bundles.
