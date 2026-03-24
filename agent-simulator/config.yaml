@@ -1,0 +1,14 @@
+# Fleet Agent Simulator configuration example
+#
+# Before running, fill in the real clusterNamespace and clusterName from:
+#   kubectl get clusters -A
+# and ensure the kubeconfig has PATCH access on Cluster/status in that namespace.
+
+kubeconfig: ""                    # path to management cluster kubeconfig; defaults to KUBECONFIG env
+clusterNamespace: fleet-default   # registration namespace where the Cluster CR lives (NOT the cluster-fleet-... namespace)
+clusterName: sim-cluster
+agentNamespace: cattle-fleet-system
+
+# Timing
+heartbeatInterval: 20s            # how often to send Cluster.Status.Agent heartbeat
+initialDelay: 5s                  # delay before the first heartbeat after startup

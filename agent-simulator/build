@@ -1,0 +1,36 @@
+#!/bin/bash
+# Build the Fleet agent simulator binary.
+#
+# Usage:
+#   ./agent-simulator/build              # build for the host OS/arch
+#   GOOS=linux GOARCH=arm64 ./agent-simulator/build
+#   OUTPUT=/tmp/simulator ./agent-simulator/build
+#
+# The binary is written to:
+#   bin/fleet-agent-simulator  (default, relative to the fleet repo root)
+# or to the path in $OUTPUT if that variable is set.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+if [ ! -f "$REPO_ROOT/go.work" ]; then
+  echo "error: must be run from within the fleet repository (go.work not found at $REPO_ROOT)"
+  exit 1
+fi
+
+export CGO_ENABLED=0
+export GOOS="${GOOS:-$(go env GOOS)}"
+export GOARCH="${GOARCH:-$(go env GOARCH)}"
+
+OUTPUT="${OUTPUT:-$REPO_ROOT/bin/fleet-agent-simulator}"
+
+echo "Building fleet-agent-simulator (GOOS=$GOOS GOARCH=$GOARCH) -> $OUTPUT"
+
+mkdir -p "$(dirname "$OUTPUT")"
+
+cd "$REPO_ROOT"
+go build -o "$OUTPUT" ./agent-simulator/cmd/simulator/
+
+echo "Done: $OUTPUT"

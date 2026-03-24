@@ -1,0 +1,292 @@
+#!/bin/bash
+# Create a simulated Fleet cluster and generate the simulator config + kubeconfig.
+#
+# Usage:
+#   ./agent-simulator/create-cluster <cluster-name> [options]
+#
+# Options:
+#   --namespace <ns>       Fleet registration namespace  (default: fleet-default)
+#   --agent-namespace <ns> Namespace reported in heartbeats (default: cattle-fleet-system)
+#   --token-duration <d>   ServiceAccount token duration  (default: 8760h = 1 year)
+#   --out-dir <dir>        Output directory for generated files (default: ./<cluster-name>)
+#
+# What it does:
+#   1. Creates a fleet.cattle.io/v1alpha1 Cluster resource in <namespace>
+#   2. Waits for the Fleet controller to provision the cluster namespace
+#   3. Creates a ServiceAccount (fleet-agent-sim) in the cluster namespace
+#   4. Creates a Role + RoleBinding granting patch on clusters/status
+#   5. Writes <out-dir>/kubeconfig.yaml  — scoped to the simulator ServiceAccount
+#   6. Writes <out-dir>/config.yaml      — ready-to-use simulator config
+#
+# Example:
+#   ./agent-simulator/create-cluster sim-001
+#   ./bin/fleet-agent-simulator --config sim-001/config.yaml
+#
+# To delete everything created by this script:
+#   kubectl delete cluster <cluster-name> -n <namespace>
+#   kubectl delete role,rolebinding fleet-agent-sim -n <namespace>
+#   (the cluster namespace and ServiceAccount are cleaned up by the Fleet controller)
+
+set -euo pipefail
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+usage() {
+  sed -n '2,/^set /p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'
+  exit 1
+}
+
+info()  { echo "[info]  $*"; }
+ok()    { echo "[ok]    $*"; }
+error() { echo "[error] $*" >&2; exit 1; }
+
+require_cmd() {
+  command -v "$1" &>/dev/null || error "'$1' is required but not found in PATH"
+}
+
+# ── argument parsing ──────────────────────────────────────────────────────────
+
+CLUSTER_NAME=""
+FLEET_NS="fleet-default"
+AGENT_NS="cattle-fleet-system"
+TOKEN_DURATION="8760h"
+OUT_DIR=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --namespace)       FLEET_NS="$2";        shift 2 ;;
+    --agent-namespace) AGENT_NS="$2";        shift 2 ;;
+    --token-duration)  TOKEN_DURATION="$2";  shift 2 ;;
+    --out-dir)         OUT_DIR="$2";         shift 2 ;;
+    --help|-h)         usage ;;
+    -*) error "unknown option: $1" ;;
+    *)
+      [[ -z "$CLUSTER_NAME" ]] || error "unexpected argument: $1"
+      CLUSTER_NAME="$1"
+      shift
+      ;;
+  esac
+done
+
+[[ -n "$CLUSTER_NAME" ]] || { echo "error: cluster name is required"; echo ""; usage; }
+
+OUT_DIR="${OUT_DIR:-./$CLUSTER_NAME}"
+SA_NAME="fleet-agent-sim"
+
+# ── preflight ─────────────────────────────────────────────────────────────────
+
+require_cmd kubectl
+
+# Make sure we can talk to the cluster
+kubectl cluster-info &>/dev/null || error "kubectl cannot reach the cluster — check your KUBECONFIG"
+
+# Fleet CRD must be installed
+kubectl get crd clusters.fleet.cattle.io &>/dev/null \
+  || error "Fleet CRD 'clusters.fleet.cattle.io' not found — is Fleet installed?"
+
+# Registration namespace must exist
+kubectl get namespace "$FLEET_NS" &>/dev/null \
+  || error "namespace '$FLEET_NS' does not exist — is Fleet installed?"
+
+# Bail out if the Cluster already exists
+if kubectl get cluster "$CLUSTER_NAME" -n "$FLEET_NS" &>/dev/null; then
+  error "Cluster '$CLUSTER_NAME' already exists in namespace '$FLEET_NS'. Delete it first or choose a different name."
+fi
+
+mkdir -p "$OUT_DIR"
+
+# ── step 1: create Cluster resource ──────────────────────────────────────────
+
+info "Creating Cluster '$CLUSTER_NAME' in namespace '$FLEET_NS' ..."
+
+kubectl apply -f - <<EOF
+apiVersion: fleet.cattle.io/v1alpha1
+kind: Cluster
+metadata:
+  name: $CLUSTER_NAME
+  namespace: $FLEET_NS
+  labels:
+    fleet.cattle.io/cluster: $CLUSTER_NAME
+spec: {}
+EOF
+
+ok "Cluster created."
+
+# ── step 2: wait for cluster namespace ───────────────────────────────────────
+
+info "Waiting for Fleet controller to provision the cluster namespace ..."
+
+# kubectl wait --for=jsonpath requires the field to be set to a non-empty value;
+# poll manually so the error message is clear if it times out.
+TIMEOUT=120
+ELAPSED=0
+CLUSTER_NS=""
+until [[ -n "$CLUSTER_NS" ]]; do
+  CLUSTER_NS=$(kubectl get cluster "$CLUSTER_NAME" -n "$FLEET_NS" \
+    -o jsonpath='{.status.namespace}' 2>/dev/null || true)
+  if [[ -z "$CLUSTER_NS" ]]; then
+    sleep 2
+    ELAPSED=$((ELAPSED + 2))
+    if [[ $ELAPSED -ge $TIMEOUT ]]; then
+      error "Timed out after ${TIMEOUT}s waiting for Cluster.Status.Namespace to be set. Is the Fleet controller running?"
+    fi
+  fi
+done
+
+ok "Cluster namespace: $CLUSTER_NS"
+
+# ── step 3: ServiceAccount ────────────────────────────────────────────────────
+
+info "Creating ServiceAccount '$SA_NAME' in '$CLUSTER_NS' ..."
+
+kubectl create serviceaccount "$SA_NAME" -n "$CLUSTER_NS" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+ok "ServiceAccount created."
+
+# ── step 4: RBAC ─────────────────────────────────────────────────────────────
+
+info "Binding RBAC (patch clusters/status in '$FLEET_NS') ..."
+
+kubectl apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: $SA_NAME
+  namespace: $FLEET_NS
+  labels:
+    fleet.cattle.io/managed: "true"
+    fleet.agent.simulator/cluster: $CLUSTER_NAME
+rules:
+- apiGroups: [fleet.cattle.io]
+  resources: [clusters/status]
+  resourceNames: [$CLUSTER_NAME]
+  verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: $SA_NAME
+  namespace: $FLEET_NS
+  labels:
+    fleet.cattle.io/managed: "true"
+    fleet.agent.simulator/cluster: $CLUSTER_NAME
+subjects:
+- kind: ServiceAccount
+  name: $SA_NAME
+  namespace: $CLUSTER_NS
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: $SA_NAME
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: $SA_NAME
+  namespace: $CLUSTER_NS
+  labels:
+    fleet.cattle.io/managed: "true"
+    fleet.agent.simulator/cluster: $CLUSTER_NAME
+rules:
+- apiGroups: [fleet.cattle.io]
+  resources: [bundledeployments]
+  verbs: [get, list, watch]
+- apiGroups: [fleet.cattle.io]
+  resources: [bundledeployments/status]
+  verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: $SA_NAME
+  namespace: $CLUSTER_NS
+  labels:
+    fleet.cattle.io/managed: "true"
+    fleet.agent.simulator/cluster: $CLUSTER_NAME
+subjects:
+- kind: ServiceAccount
+  name: $SA_NAME
+  namespace: $CLUSTER_NS
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: $SA_NAME
+EOF
+
+ok "RBAC bound."
+
+# ── step 5: kubeconfig ────────────────────────────────────────────────────────
+
+info "Generating kubeconfig for ServiceAccount '$SA_NAME' (token duration: $TOKEN_DURATION) ..."
+
+TOKEN=$(kubectl create token "$SA_NAME" -n "$CLUSTER_NS" --duration="$TOKEN_DURATION")
+SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+CA_DATA=$(kubectl config view --minify --raw \
+  -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
+
+KUBECONFIG_FILE="$OUT_DIR/kubeconfig.yaml"
+
+cat > "$KUBECONFIG_FILE" <<EOF
+apiVersion: v1
+kind: Config
+clusters:
+- name: upstream
+  cluster:
+    server: $SERVER
+    certificate-authority-data: $CA_DATA
+users:
+- name: $SA_NAME
+  user:
+    token: $TOKEN
+contexts:
+- name: default
+  context:
+    cluster: upstream
+    user: $SA_NAME
+current-context: default
+EOF
+
+ok "Kubeconfig written: $KUBECONFIG_FILE"
+
+# ── step 6: simulator config ──────────────────────────────────────────────────
+
+info "Writing simulator config ..."
+
+CONFIG_FILE="$OUT_DIR/config.yaml"
+
+cat > "$CONFIG_FILE" <<EOF
+# Fleet agent simulator config — generated by create-cluster
+# Cluster: $CLUSTER_NAME  (created $(date -u +"%Y-%m-%dT%H:%M:%SZ"))
+
+kubeconfig: $(realpath "$KUBECONFIG_FILE")
+clusterNamespace: $FLEET_NS
+clusterName: $CLUSTER_NAME
+agentNamespace: $AGENT_NS
+bdNamespace: $CLUSTER_NS
+
+heartbeatInterval: 20s
+initialDelay: 5s
+EOF
+
+ok "Simulator config written: $CONFIG_FILE"
+
+# ── summary ───────────────────────────────────────────────────────────────────
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Cluster:           $CLUSTER_NAME"
+echo "  Registration ns:   $FLEET_NS"
+echo "  Cluster ns:        $CLUSTER_NS"
+echo "  ServiceAccount:    $SA_NAME"
+echo "  Token duration:    $TOKEN_DURATION"
+echo "  Kubeconfig:        $KUBECONFIG_FILE"
+echo "  Simulator config:  $CONFIG_FILE"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "Run the simulator:"
+echo "  ./bin/fleet-agent-simulator --config $CONFIG_FILE"
+echo ""
+echo "To tear down:"
+echo "  kubectl delete cluster $CLUSTER_NAME -n $FLEET_NS"
+echo "  kubectl delete role,rolebinding $SA_NAME -n $FLEET_NS"
