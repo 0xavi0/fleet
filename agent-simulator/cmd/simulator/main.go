@@ -99,6 +99,8 @@ func run() error {
 		ResourceCount:         cfg.ResourceCount,
 		HeartbeatInterval:     cfg.HeartbeatInterval,
 		HeartbeatInitialDelay: cfg.InitialDelay,
+		RolloutSteps:          cfg.RolloutSteps,
+		RolloutInterval:       cfg.RolloutInterval,
 	})
 	if err != nil {
 		return fmt.Errorf("creating simulator manager: %w", err)

@@ -1,6 +1,6 @@
 // Package simulator runs a controller-runtime manager that simulates a Fleet agent.
-// It watches BundleDeployments in the cluster namespace and immediately responds
-// with a fully-ready status (Phase 2 – instant ready).
+// It watches BundleDeployments in the cluster namespace and responds with status
+// updates – either instantly ready (Phase 2) or via a gradual N-step rollout (Phase 3).
 package simulator
 
 import (
@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rancher/fleet/agent-simulator/pkg/heartbeat"
+	"github.com/rancher/fleet/agent-simulator/pkg/rollout"
 	"github.com/rancher/fleet/agent-simulator/pkg/status"
 	fleet "github.com/rancher/fleet/pkg/apis/fleet.cattle.io/v1alpha1"
 
@@ -42,6 +43,11 @@ type Options struct {
 	HeartbeatInterval time.Duration
 	// HeartbeatInitialDelay is the delay before the first heartbeat.
 	HeartbeatInitialDelay time.Duration
+	// RolloutSteps is the number of incremental status updates before a BD is
+	// fully ready. 1 means instant-ready (Phase 2 behaviour).
+	RolloutSteps int
+	// RolloutInterval is the delay between rollout steps.
+	RolloutInterval time.Duration
 	// SkipNameValidation skips the controller name uniqueness check.
 	// Set to true in tests where multiple managers are created in the same process.
 	SkipNameValidation bool
@@ -72,11 +78,19 @@ func NewManager(restCfg *rest.Config, scheme *runtime.Scheme, opts Options) (ctr
 		return nil, fmt.Errorf("creating manager: %w", err)
 	}
 
+	rolloutSteps := opts.RolloutSteps
+	if rolloutSteps < 1 {
+		rolloutSteps = 1
+	}
+
 	r := &BundleDeploymentReconciler{
-		Client:         mgr.GetClient(),
-		ClusterName:    opts.ClusterName,
-		AgentNamespace: opts.AgentNamespace,
-		ResourceCount:  opts.ResourceCount,
+		Client:          mgr.GetClient(),
+		ClusterName:     opts.ClusterName,
+		AgentNamespace:  opts.AgentNamespace,
+		ResourceCount:   opts.ResourceCount,
+		RolloutSteps:    rolloutSteps,
+		RolloutInterval: opts.RolloutInterval,
+		tracker:         rollout.NewTracker(),
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("setting up BD reconciler: %w", err)
@@ -115,8 +129,8 @@ func (h *heartbeatRunnable) Start(ctx context.Context) error {
 	return nil
 }
 
-// BundleDeploymentReconciler watches BundleDeployments and immediately marks
-// them as ready by patching their status.
+// BundleDeploymentReconciler watches BundleDeployments and marks them ready,
+// either instantly (RolloutSteps=1) or via an N-step gradual rollout.
 type BundleDeploymentReconciler struct {
 	client.Client
 	// ClusterName is the simulated cluster, used for log context only.
@@ -125,6 +139,12 @@ type BundleDeploymentReconciler struct {
 	AgentNamespace string
 	// ResourceCount is the number of fake resources to report.
 	ResourceCount int
+	// RolloutSteps is the number of incremental steps to reach full readiness.
+	RolloutSteps int
+	// RolloutInterval is the delay between rollout steps.
+	RolloutInterval time.Duration
+	// tracker maintains per-BD rollout state.
+	tracker *rollout.Tracker
 }
 
 // Reconcile implements reconcile.Reconciler.
@@ -134,6 +154,7 @@ func (r *BundleDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	var bd fleet.BundleDeployment
 	if err := r.Get(ctx, req.NamespacedName, &bd); err != nil {
 		if apierrors.IsNotFound(err) {
+			r.tracker.Delete(req.NamespacedName.String())
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("getting BundleDeployment: %w", err)
@@ -153,17 +174,32 @@ func (r *BundleDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, nil
 	}
 
-	// Already processed: nothing to do.
-	if bd.Spec.DeploymentID != "" && bd.Spec.DeploymentID == bd.Status.AppliedDeploymentID {
-		return ctrl.Result{}, nil
+	key := req.NamespacedName.String()
+
+	// If no in-progress rollout state exists for this deploymentID, check whether
+	// the BD has already been fully applied (e.g. pre-existing state after restart).
+	if !r.tracker.IsInProgress(key, bd.Spec.DeploymentID) {
+		if bd.Spec.DeploymentID != "" && bd.Spec.DeploymentID == bd.Status.AppliedDeploymentID {
+			return ctrl.Result{}, nil
+		}
 	}
 
-	logger.V(1).Info("Marking BundleDeployment ready", "bd", bd.Name, "deploymentID", bd.Spec.DeploymentID)
+	// Advance the rollout by one step.
+	step, done := r.tracker.Next(key, bd.Spec.DeploymentID, r.RolloutSteps)
+	readyCount := rollout.ReadyCount(r.ResourceCount, step, r.RolloutSteps)
+
+	logger.V(1).Info("Updating BundleDeployment status",
+		"bd", bd.Name,
+		"deploymentID", bd.Spec.DeploymentID,
+		"step", step,
+		"totalSteps", r.RolloutSteps,
+		"readyCount", readyCount,
+	)
 
 	newStatus := status.Build(status.BuildParams{
 		DeploymentID:   bd.Spec.DeploymentID,
 		ResourceCount:  r.ResourceCount,
-		ReadyCount:     r.ResourceCount,
+		ReadyCount:     readyCount,
 		AgentNamespace: r.AgentNamespace,
 		Namespace:      bd.Namespace,
 		BDName:         bd.Name,
@@ -175,6 +211,9 @@ func (r *BundleDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, fmt.Errorf("patching BundleDeployment status: %w", err)
 	}
 
+	if !done {
+		return ctrl.Result{RequeueAfter: r.RolloutInterval}, nil
+	}
 	return ctrl.Result{}, nil
 }
 

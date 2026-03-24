@@ -12,3 +12,7 @@ agentNamespace: cattle-fleet-system
 # Timing
 heartbeatInterval: 20s            # how often to send Cluster.Status.Agent heartbeat
 initialDelay: 5s                  # delay before the first heartbeat after startup
+
+# Phase 3: gradual rollout
+# rolloutSteps: 1                 # number of incremental status patches before a BD is fully ready (default 1 = instant)
+# rolloutInterval: 5s             # delay between rollout steps (default 5s)

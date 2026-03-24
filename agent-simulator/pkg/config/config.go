@@ -21,6 +21,11 @@ type Config struct {
 	InitialDelay      time.Duration `yaml:"initialDelay"`
 	// ResourceCount is the number of fake resources reported per BundleDeployment.
 	ResourceCount int `yaml:"resourceCount"`
+	// RolloutSteps is the number of incremental status updates before a BD is fully ready.
+	// 1 means instant-ready (Phase 2 behaviour). Default 1.
+	RolloutSteps int `yaml:"rolloutSteps"`
+	// RolloutInterval is the delay between rollout steps. Default 5s.
+	RolloutInterval time.Duration `yaml:"rolloutInterval"`
 }
 
 // Load reads a YAML config file from path and applies defaults.
@@ -48,6 +53,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.ResourceCount == 0 {
 		c.ResourceCount = 10
+	}
+	if c.RolloutSteps == 0 {
+		c.RolloutSteps = 1
+	}
+	if c.RolloutInterval == 0 {
+		c.RolloutInterval = 5 * time.Second
 	}
 }
 
