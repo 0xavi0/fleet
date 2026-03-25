@@ -8,11 +8,41 @@ kubeconfig: ""                    # path to management cluster kubeconfig; defau
 clusterNamespace: fleet-default   # registration namespace where the Cluster CR lives (NOT the cluster-fleet-... namespace)
 clusterName: sim-cluster
 agentNamespace: cattle-fleet-system
+bdNamespace: ""                   # cluster namespace where BundleDeployments live (Cluster.Status.Namespace, e.g. cluster-fleet-default-sim-cluster-a1b2c3d4)
 
 # Timing
 heartbeatInterval: 20s            # how often to send Cluster.Status.Agent heartbeat
 initialDelay: 5s                  # delay before the first heartbeat after startup
 
+# Phase 2/3: BundleDeployment status simulation
+# resourceCount: 10               # number of fake resources reported per BundleDeployment (default 10)
+
 # Phase 3: gradual rollout
 # rolloutSteps: 1                 # number of incremental status patches before a BD is fully ready (default 1 = instant)
 # rolloutInterval: 5s             # delay between rollout steps (default 5s)
+
+# Phase 4: drift simulation
+# Periodically injects drift into ready BundleDeployments (NonModified=false, ModifiedStatus populated).
+# Disabled by default; set enabled: true to activate.
+# drift:
+#   enabled: false                # activate the drift scheduler (default false)
+#   minInterval: 60s              # minimum time between drift events per BD (default 60s)
+#   maxInterval: 300s             # maximum time between drift events per BD (default 300s)
+#   resourceCount: 1              # number of resources to mark as drifted per event (default 1)
+#   affectsReady: false           # if true, drift also sets Ready=false on the BD (default false)
+#   autoRecover: false            # if true, automatically recover after recoveryDelay (default false)
+#   recoveryDelay: 30s            # delay between drift and auto-recovery (default 30s)
+
+# Phase 5: random failure simulation
+# On each global tick, iterates all ready BundleDeployments and applies probability-based failure
+# injection (Ready=false, NonReadyStatus populated with realistic pod error states such as
+# CrashLoopBackOff, ImagePullBackOff, OOMKilled, CreateContainerError, ErrImageNeverPull).
+# Disabled by default; set enabled: true to activate.
+# failure:
+#   enabled: false                # activate the failure scheduler (default false)
+#   minInterval: 120s             # minimum time between global failure ticks (default 120s)
+#   maxInterval: 600s             # maximum time between global failure ticks (default 600s)
+#   resourceCount: 1              # number of resources to mark as failed per event (default 1)
+#   probability: 0.1              # per-BD probability of being selected on each tick (0.0–1.0; default 0.1)
+#   autoRecover: true             # if true, automatically recover after recoveryDelay (default true)
+#   recoveryDelay: 60s            # delay between failure and auto-recovery (default 60s)

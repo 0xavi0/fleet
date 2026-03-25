@@ -9,7 +9,7 @@ Useful for:
 
 The simulator speaks the exact same API as a real Fleet agent:
 - Periodic `Cluster/status` JSONPatch heartbeats (Phase 1)
-- `BundleDeployment/status` patches with realistic ready/non-ready/drifted states (Phases 2-5)
+- `BundleDeployment/status` patches with realistic ready/non-ready/drifted/failed states (Phases 2-5)
 
 ---
 
@@ -57,16 +57,10 @@ Minimum required fields:
 
 ```yaml
 kubeconfig: /path/to/upstream-kubeconfig   # or set KUBECONFIG env var
-clusterNamespace: cluster-fleet-default-mycluster-abc12
+clusterNamespace: fleet-default            # registration namespace — where the Cluster CR lives
 clusterName: mycluster
 agentNamespace: cattle-fleet-system
-```
-
-Optional timing overrides (shown with defaults):
-
-```yaml
-heartbeatInterval: 20s   # how often to send Cluster.Status.Agent heartbeat
-initialDelay: 5s         # pause before the first heartbeat
+bdNamespace: cluster-fleet-default-mycluster-abc12  # cluster namespace — where BundleDeployments live (Cluster.Status.Namespace)
 ```
 
 ### 4. Run
@@ -104,10 +98,38 @@ kubeconfig: ""                          # path to kubeconfig; falls back to KUBE
 clusterNamespace: fleet-default         # registration namespace where the Cluster CR lives (e.g. fleet-default or fleet-local)
 clusterName: sim-cluster
 agentNamespace: cattle-fleet-system     # agent deployment namespace reported in heartbeats
+bdNamespace: cluster-fleet-default-sim-cluster-a1b2c3d4  # Cluster.Status.Namespace — where BundleDeployments live
 
 # Timing
 heartbeatInterval: 20s                  # default: 20s
 initialDelay: 5s                        # default: 5s
+
+# BundleDeployment simulation (Phase 2+)
+resourceCount: 10                       # fake resources reported per BD; default: 10
+
+# Gradual rollout (Phase 3)
+rolloutSteps: 1                         # incremental patches before a BD is Ready; 1 = instant; default: 1
+rolloutInterval: 5s                     # delay between rollout steps; default: 5s
+
+# Drift simulation (Phase 4)
+drift:
+  enabled: false                        # activate the drift scheduler; default: false
+  minInterval: 60s                      # minimum time between drift events per BD; default: 60s
+  maxInterval: 300s                     # maximum time between drift events per BD; default: 300s
+  resourceCount: 1                      # resources to mark as drifted per event; default: 1
+  affectsReady: false                   # also set Ready=false when drifted; default: false
+  autoRecover: false                    # automatically restore the BD after recoveryDelay; default: false
+  recoveryDelay: 30s                    # delay before auto-recovery fires; default: 30s
+
+# Failure simulation (Phase 5)
+failure:
+  enabled: false                        # activate the failure scheduler; default: false
+  minInterval: 120s                     # minimum time between global failure ticks; default: 120s
+  maxInterval: 600s                     # maximum time between global failure ticks; default: 600s
+  resourceCount: 1                      # resources to mark as failed per event; default: 1
+  probability: 0.1                      # per-BD probability of being selected on each tick; default: 0.1
+  autoRecover: true                     # automatically restore the BD after recoveryDelay; default: true
+  recoveryDelay: 60s                    # delay before auto-recovery fires; default: 60s
 ```
 
 ---
@@ -124,12 +146,12 @@ The simulator skips the real agent registration bootstrap entirely. Instead it n
 
 Fleet uses **two different namespaces** per cluster. Do not confuse them:
 
-| Concept | Typical value | Contains |
-|---------|--------------|---------|
-| **Registration namespace** — `clusterNamespace` in the simulator config | `fleet-default` | The `Cluster` resource itself |
-| **Cluster namespace** — `cluster.Status.Namespace` | `cluster-fleet-default-<name>-<hash>` | `BundleDeployment` resources; where the ServiceAccount lives |
+| Concept | Config key | Typical value | Contains |
+|---------|-----------|--------------|---------|
+| **Registration namespace** | `clusterNamespace` | `fleet-default` | The `Cluster` resource itself |
+| **Cluster namespace** | `bdNamespace` | `cluster-fleet-default-<name>-<hash>` | `BundleDeployment` resources; where the ServiceAccount lives |
 
-The heartbeat patches `Cluster/status`, so `clusterNamespace` in the config must be the **registration namespace** (e.g. `fleet-default`), not the cluster namespace.
+The heartbeat patches `Cluster/status`, so `clusterNamespace` must be the **registration namespace** (e.g. `fleet-default`). The `bdNamespace` is `Cluster.Status.Namespace` — the per-cluster namespace provisioned by the Fleet controller. Both are required.
 
 Choose the path that fits your situation.
 
@@ -235,6 +257,7 @@ kubeconfig: sim-kubeconfig.yaml
 clusterNamespace: fleet-default   # registration namespace — where the Cluster CR lives
 clusterName: mycluster
 agentNamespace: cattle-fleet-system
+bdNamespace: cluster-fleet-default-mycluster-abc12  # Cluster.Status.Namespace
 ```
 
 ---
@@ -362,6 +385,7 @@ kubeconfig: sim-kubeconfig.yaml
 clusterNamespace: fleet-default   # registration namespace — where the Cluster CR lives, NOT $CLUSTER_NS
 clusterName: sim-cluster
 agentNamespace: cattle-fleet-system
+bdNamespace: $CLUSTER_NS          # Cluster.Status.Namespace — where BundleDeployments live
 ```
 
 ```bash
@@ -387,10 +411,9 @@ The simulator's ServiceAccount needs different permissions depending on which ph
 | 2+ — BD status | `bundledeployments/status` | cluster namespace | `update`, `patch` |
 | 2+ — Values secrets | `secrets` | cluster namespace | `get` |
 
-For Phase 1 only (current), the single `Role` + `RoleBinding` shown above is sufficient. The `fleet-bundle-deployment` ClusterRole (created automatically by the Fleet controller at startup) covers the Phase 2+ permissions and can be bound with an additional `RoleBinding`:
+For Phase 1 only, the single `Role` + `RoleBinding` shown above is sufficient. Phases 2–5 also need access to `BundleDeployment` resources in the cluster namespace. The `fleet-bundle-deployment` ClusterRole (created automatically by the Fleet controller at startup) covers these permissions and can be bound with an additional `RoleBinding`:
 
 ```bash
-# Add when implementing Phase 2+
 kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -410,7 +433,9 @@ EOF
 
 ---
 
-## What the simulator does (Phase 1)
+## What the simulator does
+
+### Phase 1 — Heartbeat
 
 After startup the simulator:
 
@@ -421,6 +446,81 @@ After startup the simulator:
 
 Without regular heartbeats the Fleet controller marks the agent as offline. The simulator keeps the simulated cluster appearing online indefinitely.
 
+### Phase 2 & 3 — BundleDeployment status
+
+The simulator watches `BundleDeployment` resources in the cluster namespace and patches their status. With `rolloutSteps: 1` (the default) each BD transitions to `Ready=true` immediately. With a higher value the simulator sends N incremental patches with increasing ready-resource counts, mimicking a real Helm deploy rolling out across pods.
+
+### Phase 4 — Drift simulation
+
+When `drift.enabled: true` the simulator runs a background scheduler that periodically injects drift into ready BundleDeployments:
+
+- A random timer fires for each ready BD at an interval chosen uniformly in `[minInterval, maxInterval]`.
+- On fire: `NonModified` is set to `false` and `ModifiedStatus` is populated with `resourceCount` synthetic patch entries (one per fake resource, e.g. `{"spec":{"replicas":3}}`). `ResourceCounts.Modified` is updated to match.
+- If `affectsReady: true`, `Ready` is also set to `false` and the `Ready` condition is updated to `Reason: Drifted`.
+- If `autoRecover: true`, after `recoveryDelay` the scheduler restores `NonModified: true`, clears `ModifiedStatus`, and (if `affectsReady` was set) restores `Ready: true`. After recovery a new drift timer is scheduled.
+- If `autoRecover: false`, the BD stays drifted until a real deployment (DeploymentID change) triggers the reconciler to overwrite the status.
+
+**Example — slow drift, no ready impact, auto-recover:**
+
+```yaml
+drift:
+  enabled: true
+  minInterval: 60s
+  maxInterval: 300s
+  resourceCount: 1
+  affectsReady: false
+  autoRecover: true
+  recoveryDelay: 30s
+```
+
+**Example — aggressive drift that marks BDs not-ready, no recovery (useful for alerting tests):**
+
+```yaml
+drift:
+  enabled: true
+  minInterval: 10s
+  maxInterval: 30s
+  resourceCount: 3
+  affectsReady: true
+  autoRecover: false
+```
+
+### Phase 5 — Failure simulation
+
+When `failure.enabled: true` the simulator runs a background scheduler that randomly transitions ready BundleDeployments to a failed state with realistic pod error messages:
+
+- A global tick fires at a random interval chosen uniformly in `[minInterval, maxInterval]`.
+- On each tick, every ready BD is evaluated independently: it is selected for failure with probability `probability`.
+- For each selected BD: `Ready` is set to `false`, `NonReadyStatus` is populated with `resourceCount` synthetic pod failure entries drawn from the error pool (`CrashLoopBackOff`, `ImagePullBackOff`, `OOMKilled`, `CreateContainerError`, `ErrImageNeverPull`), and `ResourceCounts.Ready`/`NotReady` are updated accordingly. The `Ready` condition is set to `Reason: SimulatedFailure`.
+- BDs that are not ready (e.g. mid-rollout, paused) are never selected.
+- If `autoRecover: true` (the default), after `recoveryDelay` the scheduler restores `Ready: true`, clears `NonReadyStatus`, and resets `ResourceCounts`. The BD is then eligible for failure again on the next tick.
+- If `autoRecover: false`, the BD stays failed until a new deployment (DeploymentID change) triggers the reconciler to overwrite the status.
+
+**Example — low-probability background noise, auto-recover (good baseline for dashboards):**
+
+```yaml
+failure:
+  enabled: true
+  minInterval: 120s
+  maxInterval: 600s
+  resourceCount: 1
+  probability: 0.1
+  autoRecover: true
+  recoveryDelay: 60s
+```
+
+**Example — high failure rate, no recovery (useful for alert and on-call runbook testing):**
+
+```yaml
+failure:
+  enabled: true
+  minInterval: 10s
+  maxInterval: 30s
+  resourceCount: 2
+  probability: 0.5
+  autoRecover: false
+```
+
 ---
 
 ## Running tests
@@ -429,6 +529,10 @@ Unit tests (no cluster needed):
 
 ```bash
 go test ./agent-simulator/pkg/config/...
+go test ./agent-simulator/pkg/status/...
+go test ./agent-simulator/pkg/resources/...
+go test ./agent-simulator/pkg/rollout/...
+go test ./agent-simulator/pkg/chaos/...   # drift + failure unit tests
 ```
 
 Integration tests (uses envtest — requires `setup-envtest`):
@@ -441,7 +545,8 @@ go install sigs.k8s.io/controller-runtime/tools/setup-envtest@"$SETUP_ENVTEST_VE
 KUBEBUILDER_ASSETS=$(setup-envtest use --use-env -p path "$ENVTEST_K8S_VERSION")
 export KUBEBUILDER_ASSETS
 
-go test ./agent-simulator/pkg/heartbeat/...
+ginkgo ./agent-simulator/pkg/heartbeat/...
+ginkgo ./agent-simulator/pkg/simulator/...   # includes drift + failure integration tests
 ```
 
 Run everything at once:
@@ -470,6 +575,26 @@ agent-simulator/
       heartbeat.go            # Cluster/status JSONPatch (Ticker + Patch)
       heartbeat_test.go       # envtest integration tests
       suite_test.go           # envtest setup/teardown
+    simulator/
+      simulator.go            # controller-runtime manager + BD reconciler
+      simulator_test.go       # envtest integration tests (rollout)
+      drift_integration_test.go     # envtest integration tests (drift)
+      failure_integration_test.go   # envtest integration tests (failure)
+      suite_test.go           # envtest setup/teardown
+    status/
+      status.go               # BundleDeploymentStatus builder
+      status_test.go
+    resources/
+      resources.go            # deterministic fake resource generator
+      resources_test.go
+    rollout/
+      rollout.go              # per-BD rollout state machine
+      rollout_test.go
+    chaos/
+      drift.go                # DriftScheduler (Phase 4)
+      drift_test.go           # unit tests for RandomInterval and BuildModifiedStatus
+      failure.go              # FailureScheduler (Phase 5)
+      failure_test.go         # unit tests for BuildNonReadyStatus
   plan.md                     # phased implementation plan
   communication.md            # Fleet agent communication protocol reference
 ```
@@ -481,10 +606,10 @@ agent-simulator/
 | Phase | Status | Description |
 |-------|--------|-------------|
 | 1 — Heartbeat | ✅ Done | Connects to management cluster, sends periodic `Cluster/status` heartbeats |
-| 2 — BD Watch + Instant Ready | Planned | Watches `BundleDeployment` resources and immediately responds with a fully-ready status |
-| 3 — Gradual Rollout | Planned | Sends N incremental status updates with increasing ready resource counts |
-| 4 — Drift Simulation | Planned | Periodically reports drift on ready BundleDeployments with optional auto-recovery |
-| 5 — Failure Simulation | Planned | Randomly transitions ready BDs to a failed state with realistic error messages |
+| 2 — BD Watch + Instant Ready | ✅ Done | Watches `BundleDeployment` resources and immediately responds with a fully-ready status |
+| 3 — Gradual Rollout | ✅ Done | Sends N incremental status updates with increasing ready resource counts |
+| 4 — Drift Simulation | ✅ Done | Periodically reports drift on ready BundleDeployments with optional auto-recovery |
+| 5 — Failure Simulation | ✅ Done | Randomly transitions ready BDs to a failed state with realistic pod error messages |
 | 6 — Multi-Cluster | Planned | Single binary simulating multiple independent agent clusters |
 | 7 — Observability | Planned | Prometheus metrics, structured logging, dry-run mode |
 

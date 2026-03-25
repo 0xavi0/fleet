@@ -26,6 +26,46 @@ type Config struct {
 	RolloutSteps int `yaml:"rolloutSteps"`
 	// RolloutInterval is the delay between rollout steps. Default 5s.
 	RolloutInterval time.Duration `yaml:"rolloutInterval"`
+	// Drift configures optional drift simulation (Phase 4).
+	Drift DriftConfig `yaml:"drift"`
+	// Failure configures optional random failure simulation (Phase 5).
+	Failure FailureConfig `yaml:"failure"`
+}
+
+// FailureConfig controls the random failure simulation.
+type FailureConfig struct {
+	// Enabled activates the failure scheduler. Default false.
+	Enabled bool `yaml:"enabled"`
+	// MinInterval is the minimum time between global failure ticks. Default 120s.
+	MinInterval time.Duration `yaml:"minInterval"`
+	// MaxInterval is the maximum time between global failure ticks. Default 600s.
+	MaxInterval time.Duration `yaml:"maxInterval"`
+	// ResourceCount is the number of resources to report as failed per event. Default 1.
+	ResourceCount int `yaml:"resourceCount"`
+	// Probability is the per-BD probability of being selected on each tick (0.0–1.0). Default 0.1.
+	Probability float64 `yaml:"probability"`
+	// AutoRecover controls whether failed BDs are automatically recovered. Default true.
+	AutoRecover bool `yaml:"autoRecover"`
+	// RecoveryDelay is the delay between a failure event and auto-recovery. Default 60s.
+	RecoveryDelay time.Duration `yaml:"recoveryDelay"`
+}
+
+// DriftConfig controls the periodic drift simulation.
+type DriftConfig struct {
+	// Enabled activates the drift scheduler. Default false.
+	Enabled bool `yaml:"enabled"`
+	// MinInterval is the minimum time between drift events per BD. Default 60s.
+	MinInterval time.Duration `yaml:"minInterval"`
+	// MaxInterval is the maximum time between drift events per BD. Default 300s.
+	MaxInterval time.Duration `yaml:"maxInterval"`
+	// ResourceCount is the number of resources to report as drifted per event. Default 1.
+	ResourceCount int `yaml:"resourceCount"`
+	// AffectsReady controls whether a drift event also sets Ready=false. Default false.
+	AffectsReady bool `yaml:"affectsReady"`
+	// AutoRecover controls whether drifted BDs are automatically recovered. Default false.
+	AutoRecover bool `yaml:"autoRecover"`
+	// RecoveryDelay is the delay between a drift event and auto-recovery. Default 30s.
+	RecoveryDelay time.Duration `yaml:"recoveryDelay"`
 }
 
 // Load reads a YAML config file from path and applies defaults.
@@ -59,6 +99,33 @@ func (c *Config) applyDefaults() {
 	}
 	if c.RolloutInterval == 0 {
 		c.RolloutInterval = 5 * time.Second
+	}
+	if c.Drift.MinInterval == 0 {
+		c.Drift.MinInterval = 60 * time.Second
+	}
+	if c.Drift.MaxInterval == 0 {
+		c.Drift.MaxInterval = 300 * time.Second
+	}
+	if c.Drift.ResourceCount == 0 {
+		c.Drift.ResourceCount = 1
+	}
+	if c.Drift.RecoveryDelay == 0 {
+		c.Drift.RecoveryDelay = 30 * time.Second
+	}
+	if c.Failure.MinInterval == 0 {
+		c.Failure.MinInterval = 120 * time.Second
+	}
+	if c.Failure.MaxInterval == 0 {
+		c.Failure.MaxInterval = 600 * time.Second
+	}
+	if c.Failure.ResourceCount == 0 {
+		c.Failure.ResourceCount = 1
+	}
+	if c.Failure.Probability == 0 {
+		c.Failure.Probability = 0.1
+	}
+	if c.Failure.RecoveryDelay == 0 {
+		c.Failure.RecoveryDelay = 60 * time.Second
 	}
 }
 

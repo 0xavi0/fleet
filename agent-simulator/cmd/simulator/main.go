@@ -11,6 +11,7 @@ import (
 
 	fleet "github.com/rancher/fleet/pkg/apis/fleet.cattle.io/v1alpha1"
 
+	"github.com/rancher/fleet/agent-simulator/pkg/chaos"
 	"github.com/rancher/fleet/agent-simulator/pkg/config"
 	"github.com/rancher/fleet/agent-simulator/pkg/simulator"
 
@@ -101,6 +102,24 @@ func run() error {
 		HeartbeatInitialDelay: cfg.InitialDelay,
 		RolloutSteps:          cfg.RolloutSteps,
 		RolloutInterval:       cfg.RolloutInterval,
+		DriftEnabled: cfg.Drift.Enabled,
+		Drift: chaos.DriftOptions{
+			AffectedResourceCount: cfg.Drift.ResourceCount,
+			MinInterval:           cfg.Drift.MinInterval,
+			MaxInterval:           cfg.Drift.MaxInterval,
+			AffectsReady:          cfg.Drift.AffectsReady,
+			AutoRecover:           cfg.Drift.AutoRecover,
+			RecoveryDelay:         cfg.Drift.RecoveryDelay,
+		},
+		FailureEnabled: cfg.Failure.Enabled,
+		Failure: chaos.FailureOptions{
+			AffectedResourceCount: cfg.Failure.ResourceCount,
+			MinInterval:           cfg.Failure.MinInterval,
+			MaxInterval:           cfg.Failure.MaxInterval,
+			Probability:           cfg.Failure.Probability,
+			AutoRecover:           cfg.Failure.AutoRecover,
+			RecoveryDelay:         cfg.Failure.RecoveryDelay,
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("creating simulator manager: %w", err)

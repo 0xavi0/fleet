@@ -1,6 +1,7 @@
 // Package simulator runs a controller-runtime manager that simulates a Fleet agent.
 // It watches BundleDeployments in the cluster namespace and responds with status
 // updates – either instantly ready (Phase 2) or via a gradual N-step rollout (Phase 3).
+// Phase 4 adds optional drift simulation via the DriftScheduler.
 package simulator
 
 import (
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/rancher/fleet/agent-simulator/pkg/chaos"
 	"github.com/rancher/fleet/agent-simulator/pkg/heartbeat"
 	"github.com/rancher/fleet/agent-simulator/pkg/rollout"
 	"github.com/rancher/fleet/agent-simulator/pkg/status"
@@ -51,6 +53,14 @@ type Options struct {
 	// SkipNameValidation skips the controller name uniqueness check.
 	// Set to true in tests where multiple managers are created in the same process.
 	SkipNameValidation bool
+	// DriftEnabled activates the drift scheduler (Phase 4).
+	DriftEnabled bool
+	// Drift configures the drift scheduler when DriftEnabled is true.
+	Drift chaos.DriftOptions
+	// FailureEnabled activates the failure scheduler (Phase 5).
+	FailureEnabled bool
+	// Failure configures the failure scheduler when FailureEnabled is true.
+	Failure chaos.FailureOptions
 }
 
 // NewManager creates a controller-runtime manager scoped to clusterNamespace,
@@ -106,6 +116,26 @@ func NewManager(restCfg *rest.Config, scheme *runtime.Scheme, opts Options) (ctr
 	}
 	if err := mgr.Add(hb); err != nil {
 		return nil, fmt.Errorf("adding heartbeat runnable: %w", err)
+	}
+
+	if opts.DriftEnabled {
+		driftOpts := opts.Drift
+		driftOpts.Namespace = opts.BDNamespace
+		driftOpts.TotalResourceCount = opts.ResourceCount
+		ds := chaos.NewDriftScheduler(mgr.GetClient(), driftOpts)
+		if err := mgr.Add(ds); err != nil {
+			return nil, fmt.Errorf("adding drift scheduler: %w", err)
+		}
+	}
+
+	if opts.FailureEnabled {
+		failureOpts := opts.Failure
+		failureOpts.Namespace = opts.BDNamespace
+		failureOpts.TotalResourceCount = opts.ResourceCount
+		fs := chaos.NewFailureScheduler(mgr.GetClient(), failureOpts)
+		if err := mgr.Add(fs); err != nil {
+			return nil, fmt.Errorf("adding failure scheduler: %w", err)
+		}
 	}
 
 	return mgr, nil
