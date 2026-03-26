@@ -46,3 +46,24 @@ initialDelay: 5s                  # delay before the first heartbeat after start
 #   probability: 0.1              # per-BD probability of being selected on each tick (0.0–1.0; default 0.1)
 #   autoRecover: true             # if true, automatically recover after recoveryDelay (default true)
 #   recoveryDelay: 60s            # delay between failure and auto-recovery (default 60s)
+
+# Phase 6: multi-cluster simulation
+# Uncomment the clusters list to simulate multiple independent agents in a single binary.
+# When clusters is set the top-level fields above become global defaults; each cluster
+# entry can override any of them. The single-cluster fields (clusterNamespace, clusterName,
+# bdNamespace) are ignored when clusters is non-empty.
+#
+# clusters:
+#   - clusterNamespace: fleet-default                               # required: registration namespace
+#     clusterName: sim-001                                          # required: cluster name
+#     bdNamespace: cluster-fleet-default-sim-001-abc123             # required: Cluster.Status.Namespace
+#     kubeconfig: sim-cluster-1/kubeconfig.yaml                     # per-cluster kubeconfig (required when
+#                                                                   # each cluster has its own ServiceAccount)
+#     # agentNamespace, heartbeatInterval, initialDelay, resourceCount,
+#     # rolloutSteps, rolloutInterval, drift, failure can all be overridden per cluster.
+#
+#   - clusterNamespace: fleet-default
+#     clusterName: sim-002
+#     bdNamespace: cluster-fleet-default-sim-002-def456
+#     kubeconfig: sim-cluster-2/kubeconfig.yaml
+#     rolloutSteps: 5             # per-cluster override (global default used for everything else)

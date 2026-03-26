@@ -130,6 +130,21 @@ failure:
   probability: 0.1                      # per-BD probability of being selected on each tick; default: 0.1
   autoRecover: true                     # automatically restore the BD after recoveryDelay; default: true
   recoveryDelay: 60s                    # delay before auto-recovery fires; default: 60s
+
+# Multi-cluster simulation (Phase 6)
+# When clusters is non-empty all top-level fields above become global defaults.
+# Each cluster entry can override any of them. The single-cluster fields
+# (clusterNamespace, clusterName, bdNamespace) are ignored.
+# clusters:
+#   - clusterNamespace: fleet-default
+#     clusterName: sim-001
+#     bdNamespace: cluster-fleet-default-sim-001-abc123
+#     kubeconfig: sim-cluster-1/kubeconfig.yaml   # required when using per-cluster ServiceAccounts
+#   - clusterNamespace: fleet-default
+#     clusterName: sim-002
+#     bdNamespace: cluster-fleet-default-sim-002-def456
+#     kubeconfig: sim-cluster-2/kubeconfig.yaml
+#     rolloutSteps: 5            # per-cluster override; inherits everything else from global defaults
 ```
 
 ---
@@ -485,6 +500,44 @@ drift:
   autoRecover: false
 ```
 
+### Phase 6 — Multi-cluster simulation
+
+When the `clusters` list is non-empty the simulator runs **one independent manager per cluster** within a single binary. Each manager:
+
+- Watches `BundleDeployment` resources only in its own cluster namespace (no cross-cluster visibility).
+- Sends heartbeats for its own `Cluster` resource.
+- Maintains its own rollout, drift, and failure state.
+
+All managers share the same upstream kubeconfig and run concurrently. A single SIGINT/SIGTERM shuts them all down gracefully.
+
+**Example — two simulated clusters, each with its own kubeconfig:**
+
+```yaml
+agentNamespace: cattle-fleet-system
+heartbeatInterval: 20s
+resourceCount: 10
+rolloutSteps: 3
+
+clusters:
+  - clusterNamespace: fleet-default
+    clusterName: sim-001
+    bdNamespace: cluster-fleet-default-sim-001-abc123
+    kubeconfig: sim-cluster-1/kubeconfig.yaml   # credentials for sim-001's ServiceAccount
+  - clusterNamespace: fleet-default
+    clusterName: sim-002
+    bdNamespace: cluster-fleet-default-sim-002-def456
+    kubeconfig: sim-cluster-2/kubeconfig.yaml   # credentials for sim-002's ServiceAccount
+    rolloutSteps: 5                             # per-cluster override
+```
+
+If you use `create-cluster` to provision each simulated cluster, it writes a `kubeconfig.yaml` into the cluster's output directory. Reference those paths in the `clusters` list as shown above — each cluster's ServiceAccount only has RBAC access to its own namespace, so a per-cluster kubeconfig is required.
+
+A shared top-level `kubeconfig` can still be used when a single ServiceAccount has access to all cluster namespaces (e.g. a cluster-admin credential in a dev environment). In that case omit `kubeconfig` from each cluster entry and set it at the top level.
+
+**Per-cluster overrides** — any top-level field (`kubeconfig`, `agentNamespace`, `heartbeatInterval`, `initialDelay`, `resourceCount`, `rolloutSteps`, `rolloutInterval`, `drift`, `failure`) can be overridden inside a cluster entry. Fields not overridden are inherited from the global defaults.
+
+---
+
 ### Phase 5 — Failure simulation
 
 When `failure.enabled: true` the simulator runs a background scheduler that randomly transitions ready BundleDeployments to a failed state with realistic pod error messages:
@@ -571,6 +624,7 @@ agent-simulator/
     config/
       config.go               # Config struct, YAML loader, defaults, validation
       config_test.go
+      multi_cluster_test.go   # multi-cluster config merging tests
     heartbeat/
       heartbeat.go            # Cluster/status JSONPatch (Ticker + Patch)
       heartbeat_test.go       # envtest integration tests
@@ -578,8 +632,9 @@ agent-simulator/
     simulator/
       simulator.go            # controller-runtime manager + BD reconciler
       simulator_test.go       # envtest integration tests (rollout)
-      drift_integration_test.go     # envtest integration tests (drift)
-      failure_integration_test.go   # envtest integration tests (failure)
+      drift_integration_test.go           # envtest integration tests (drift)
+      failure_integration_test.go         # envtest integration tests (failure)
+      multi_cluster_integration_test.go   # envtest integration tests (multi-cluster)
       suite_test.go           # envtest setup/teardown
     status/
       status.go               # BundleDeploymentStatus builder
@@ -610,7 +665,7 @@ agent-simulator/
 | 3 — Gradual Rollout | ✅ Done | Sends N incremental status updates with increasing ready resource counts |
 | 4 — Drift Simulation | ✅ Done | Periodically reports drift on ready BundleDeployments with optional auto-recovery |
 | 5 — Failure Simulation | ✅ Done | Randomly transitions ready BDs to a failed state with realistic pod error messages |
-| 6 — Multi-Cluster | Planned | Single binary simulating multiple independent agent clusters |
+| 6 — Multi-Cluster | ✅ Done | Single binary simulating multiple independent agent clusters |
 | 7 — Observability | Planned | Prometheus metrics, structured logging, dry-run mode |
 
 See [plan.md](./plan.md) for full implementation details and [communication.md](./communication.md) for the Fleet agent communication protocol reference.

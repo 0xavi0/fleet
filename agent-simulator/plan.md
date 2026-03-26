@@ -341,7 +341,7 @@ Failure struct {
 
 ---
 
-## Phase 6: Multi-Cluster Simulation
+## Phase 6: Multi-Cluster Simulation ✅ DONE
 
 **Goal**: Run a single simulator binary that simulates multiple agents (one per cluster).
 

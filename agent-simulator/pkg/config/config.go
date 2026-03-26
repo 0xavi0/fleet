@@ -10,6 +10,8 @@ import (
 )
 
 // Config holds the simulator configuration.
+// In multi-cluster mode the top-level fields (except Clusters) act as global
+// defaults; each ClusterConfig in Clusters can override any of them.
 type Config struct {
 	Kubeconfig        string        `yaml:"kubeconfig"`
 	ClusterNamespace  string        `yaml:"clusterNamespace"`
@@ -30,6 +32,86 @@ type Config struct {
 	Drift DriftConfig `yaml:"drift"`
 	// Failure configures optional random failure simulation (Phase 5).
 	Failure FailureConfig `yaml:"failure"`
+	// Clusters is the list of simulated clusters for multi-cluster mode (Phase 6).
+	// When non-empty, the top-level fields above serve as global defaults that
+	// each cluster entry can override. When empty, single-cluster mode is used
+	// with ClusterNamespace/ClusterName/AgentNamespace/BDNamespace directly.
+	Clusters []ClusterConfig `yaml:"clusters"`
+}
+
+// ClusterConfig holds per-cluster settings for multi-cluster mode.
+// Any zero/nil value means "inherit from the top-level Config defaults".
+type ClusterConfig struct {
+	// ClusterNamespace is required for each cluster entry.
+	ClusterNamespace string `yaml:"clusterNamespace"`
+	// ClusterName is required for each cluster entry.
+	ClusterName string `yaml:"clusterName"`
+	// Kubeconfig overrides the global kubeconfig path when non-empty.
+	// Use this when each simulated cluster has its own ServiceAccount and kubeconfig
+	// (the typical output of create-cluster), so that each manager authenticates
+	// with the correct credentials for its cluster namespace.
+	Kubeconfig string `yaml:"kubeconfig"`
+	// AgentNamespace overrides the global default when non-empty.
+	AgentNamespace string `yaml:"agentNamespace"`
+	// BDNamespace overrides the global default when non-empty.
+	BDNamespace string `yaml:"bdNamespace"`
+	// HeartbeatInterval overrides the global default when non-zero.
+	HeartbeatInterval time.Duration `yaml:"heartbeatInterval"`
+	// InitialDelay overrides the global default when non-zero.
+	InitialDelay time.Duration `yaml:"initialDelay"`
+	// ResourceCount overrides the global default when non-zero.
+	ResourceCount int `yaml:"resourceCount"`
+	// RolloutSteps overrides the global default when non-zero.
+	RolloutSteps int `yaml:"rolloutSteps"`
+	// RolloutInterval overrides the global default when non-zero.
+	RolloutInterval time.Duration `yaml:"rolloutInterval"`
+	// Drift overrides the global default when non-nil.
+	Drift *DriftConfig `yaml:"drift"`
+	// Failure overrides the global default when non-nil.
+	Failure *FailureConfig `yaml:"failure"`
+}
+
+// Resolve merges this ClusterConfig with the global defaults in base and returns
+// a fully-populated single-cluster Config for that cluster. The Clusters field
+// of the result is always nil to prevent accidental recursion.
+func (cc ClusterConfig) Resolve(base Config) Config {
+	result := base
+	result.Clusters = nil
+
+	result.ClusterNamespace = cc.ClusterNamespace
+	result.ClusterName = cc.ClusterName
+
+	if cc.Kubeconfig != "" {
+		result.Kubeconfig = cc.Kubeconfig
+	}
+	if cc.AgentNamespace != "" {
+		result.AgentNamespace = cc.AgentNamespace
+	}
+	if cc.BDNamespace != "" {
+		result.BDNamespace = cc.BDNamespace
+	}
+	if cc.HeartbeatInterval != 0 {
+		result.HeartbeatInterval = cc.HeartbeatInterval
+	}
+	if cc.InitialDelay != 0 {
+		result.InitialDelay = cc.InitialDelay
+	}
+	if cc.ResourceCount != 0 {
+		result.ResourceCount = cc.ResourceCount
+	}
+	if cc.RolloutSteps != 0 {
+		result.RolloutSteps = cc.RolloutSteps
+	}
+	if cc.RolloutInterval != 0 {
+		result.RolloutInterval = cc.RolloutInterval
+	}
+	if cc.Drift != nil {
+		result.Drift = *cc.Drift
+	}
+	if cc.Failure != nil {
+		result.Failure = *cc.Failure
+	}
+	return result
 }
 
 // FailureConfig controls the random failure simulation.
@@ -130,7 +212,27 @@ func (c *Config) applyDefaults() {
 }
 
 // Validate returns an error if any required field is missing.
+// In multi-cluster mode each cluster entry is validated against the resolved
+// (merged) configuration, so global defaults can satisfy per-cluster requirements.
 func (c *Config) Validate() error {
+	if len(c.Clusters) > 0 {
+		for i, cc := range c.Clusters {
+			resolved := cc.Resolve(*c)
+			if err := resolved.validateSingle(); err != nil {
+				name := cc.ClusterName
+				if name == "" {
+					name = fmt.Sprintf("index %d", i)
+				}
+				return fmt.Errorf("cluster %s: %w", name, err)
+			}
+		}
+		return nil
+	}
+	return c.validateSingle()
+}
+
+// validateSingle checks required fields for a single-cluster config.
+func (c *Config) validateSingle() error {
 	if c.ClusterNamespace == "" {
 		return fmt.Errorf("clusterNamespace is required")
 	}

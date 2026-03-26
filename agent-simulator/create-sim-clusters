@@ -1,0 +1,315 @@
+#!/bin/bash
+# Create N simulated Fleet clusters and generate a single multi-cluster simulator config.
+#
+# Usage:
+#   ./agent-simulator/create-sim-clusters <N> [options]
+#
+# Parameters:
+#   N                      Number of clusters to create (named sim-cluster-1 to sim-cluster-N)
+#
+# Options:
+#   --run                  After generating the config, execute the simulator immediately
+#   --cleanup              Delete all Kubernetes resources and local files for sim-cluster-1..N
+#   --namespace <ns>       Fleet registration namespace  (default: fleet-default)
+#   --agent-namespace <ns> Namespace reported in heartbeats (default: cattle-fleet-system)
+#   --token-duration <d>   ServiceAccount token duration  (default: 8760h = 1 year)
+#   --out-dir <dir>        Base output directory for per-cluster files (default: .)
+#   --config <file>        Path for the generated multi-cluster config (default: sim-clusters.yaml)
+#   --simulator <path>     Path to the fleet-agent-simulator binary (default: ./bin/fleet-agent-simulator)
+#
+# Example — create 5 clusters and show the run command:
+#   ./agent-simulator/create-sim-clusters 5
+#
+# Example — create 3 clusters and run the simulator immediately:
+#   ./agent-simulator/create-sim-clusters 3 --run
+#
+# Example — custom output location:
+#   ./agent-simulator/create-sim-clusters 10 --out-dir /tmp/sim --config /tmp/sim/all.yaml --run
+#
+# Example — tear down 5 previously created clusters and remove generated files:
+#   ./agent-simulator/create-sim-clusters 5 --cleanup
+#
+# Example — tear down clusters in a non-default namespace:
+#   ./agent-simulator/create-sim-clusters 5 --cleanup --namespace fleet-local
+
+set -euo pipefail
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+usage() {
+  sed -n '2,/^set /p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'
+  exit 1
+}
+
+info()  { echo "[info]  $*"; }
+ok()    { echo "[ok]    $*"; }
+warn()  { echo "[warn]  $*" >&2; }
+error() { echo "[error] $*" >&2; exit 1; }
+
+require_cmd() {
+  command -v "$1" &>/dev/null || error "'$1' is required but not found in PATH"
+}
+
+# Read a field value from a simulator config.yaml file
+read_config_field() {
+  local file="$1"
+  local field="$2"
+  grep "^${field}:" "$file" | awk '{print $2}'
+}
+
+# ── argument parsing ──────────────────────────────────────────────────────────
+
+N=""
+RUN=false
+CLEANUP=false
+FLEET_NS="fleet-default"
+AGENT_NS="cattle-fleet-system"
+TOKEN_DURATION="8760h"
+OUT_DIR="."
+CONFIG_FILE="sim-clusters.yaml"
+SIMULATOR_BIN="./bin/fleet-agent-simulator"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --run)                RUN=true;               shift ;;
+    --cleanup)            CLEANUP=true;           shift ;;
+    --namespace)          FLEET_NS="$2";          shift 2 ;;
+    --agent-namespace)    AGENT_NS="$2";          shift 2 ;;
+    --token-duration)     TOKEN_DURATION="$2";    shift 2 ;;
+    --out-dir)            OUT_DIR="$2";           shift 2 ;;
+    --config)             CONFIG_FILE="$2";       shift 2 ;;
+    --simulator)          SIMULATOR_BIN="$2";     shift 2 ;;
+    --help|-h)            usage ;;
+    -*) error "unknown option: $1" ;;
+    *)
+      [[ -z "$N" ]] || error "unexpected argument: $1"
+      N="$1"
+      shift
+      ;;
+  esac
+done
+
+# Validate N
+[[ -n "$N" ]] || { echo "error: number of clusters is required"; echo ""; usage; }
+[[ "$N" =~ ^[1-9][0-9]*$ ]] || error "N must be a positive integer, got: $N"
+
+# ── preflight ─────────────────────────────────────────────────────────────────
+
+require_cmd kubectl
+
+kubectl cluster-info &>/dev/null \
+  || error "kubectl cannot reach the cluster — check your KUBECONFIG"
+
+# ── cleanup mode ──────────────────────────────────────────────────────────────
+
+if [[ "$CLEANUP" == true ]]; then
+  kubectl get crd clusters.fleet.cattle.io &>/dev/null \
+    || error "Fleet CRD 'clusters.fleet.cattle.io' not found — is Fleet installed?"
+
+  kubectl get namespace "$FLEET_NS" &>/dev/null \
+    || error "namespace '$FLEET_NS' does not exist"
+
+  OUT_DIR="$(cd "$OUT_DIR" && pwd)"
+
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  Cleaning up $N simulated cluster(s)"
+  echo "  Registration namespace: $FLEET_NS"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+
+  ERRORS=0
+  for i in $(seq 1 "$N"); do
+    CLUSTER_NAME="sim-cluster-${i}"
+    REG_RBAC_NAME="fleet-agent-sim-${CLUSTER_NAME}"
+    CLUSTER_OUT_DIR="$OUT_DIR/$CLUSTER_NAME"
+
+    info "[$i/$N] Deleting cluster '$CLUSTER_NAME' ..."
+
+    # Delete the Cluster resource (Fleet controller cleans up the cluster namespace,
+    # ServiceAccount, and BD-namespace RBAC automatically).
+    if kubectl get cluster "$CLUSTER_NAME" -n "$FLEET_NS" &>/dev/null; then
+      kubectl delete cluster "$CLUSTER_NAME" -n "$FLEET_NS"
+      ok "Cluster '$CLUSTER_NAME' deleted."
+    else
+      warn "Cluster '$CLUSTER_NAME' not found in namespace '$FLEET_NS' — skipping."
+    fi
+
+    # Delete the Role + RoleBinding in the registration namespace (not managed by
+    # the Fleet controller, so we must remove them explicitly).
+    if kubectl get role "$REG_RBAC_NAME" -n "$FLEET_NS" &>/dev/null 2>&1 \
+    || kubectl get rolebinding "$REG_RBAC_NAME" -n "$FLEET_NS" &>/dev/null 2>&1; then
+      kubectl delete role,rolebinding "$REG_RBAC_NAME" -n "$FLEET_NS" \
+        --ignore-not-found=true
+      ok "RBAC '$REG_RBAC_NAME' deleted from '$FLEET_NS'."
+    else
+      warn "RBAC '$REG_RBAC_NAME' not found in '$FLEET_NS' — skipping."
+    fi
+
+    # Remove the local per-cluster directory (kubeconfig.yaml + config.yaml).
+    if [[ -d "$CLUSTER_OUT_DIR" ]]; then
+      rm -rf "$CLUSTER_OUT_DIR"
+      ok "Removed local directory: $CLUSTER_OUT_DIR"
+    fi
+
+    echo ""
+  done
+
+  # Remove the generated multi-cluster config file.
+  if [[ -f "$CONFIG_FILE" ]]; then
+    rm -f "$CONFIG_FILE"
+    ok "Removed multi-cluster config: $CONFIG_FILE"
+  fi
+
+  if [[ $ERRORS -gt 0 ]]; then
+    error "Cleanup completed with $ERRORS error(s)."
+  fi
+
+  echo ""
+  ok "Cleanup complete."
+  echo ""
+  exit 0
+fi
+
+# ── create mode ───────────────────────────────────────────────────────────────
+
+kubectl get crd clusters.fleet.cattle.io &>/dev/null \
+  || error "Fleet CRD 'clusters.fleet.cattle.io' not found — is Fleet installed?"
+
+kubectl get namespace "$FLEET_NS" &>/dev/null \
+  || error "namespace '$FLEET_NS' does not exist — is Fleet installed?"
+
+# Resolve the create-cluster script relative to this script's location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CREATE_CLUSTER="$SCRIPT_DIR/create-cluster"
+[[ -x "$CREATE_CLUSTER" ]] \
+  || error "create-cluster script not found or not executable: $CREATE_CLUSTER"
+
+# Ensure the output directory exists
+mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"   # absolute path
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Creating $N simulated cluster(s)"
+echo "  Registration namespace: $FLEET_NS"
+echo "  Output directory:       $OUT_DIR"
+echo "  Multi-cluster config:   $CONFIG_FILE"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+# ── create clusters ───────────────────────────────────────────────────────────
+
+declare -a CLUSTER_NAMES=()
+declare -a CLUSTER_DIRS=()
+
+for i in $(seq 1 "$N"); do
+  CLUSTER_NAME="sim-cluster-${i}"
+  CLUSTER_OUT_DIR="$OUT_DIR/$CLUSTER_NAME"
+
+  info "[$i/$N] Creating cluster '$CLUSTER_NAME' ..."
+
+  "$CREATE_CLUSTER" "$CLUSTER_NAME" \
+    --namespace       "$FLEET_NS" \
+    --agent-namespace "$AGENT_NS" \
+    --token-duration  "$TOKEN_DURATION" \
+    --out-dir         "$CLUSTER_OUT_DIR"
+
+  CLUSTER_NAMES+=("$CLUSTER_NAME")
+  CLUSTER_DIRS+=("$CLUSTER_OUT_DIR")
+
+  echo ""
+done
+
+ok "All $N cluster(s) created."
+echo ""
+
+# ── build multi-cluster config ────────────────────────────────────────────────
+
+info "Generating multi-cluster simulator config: $CONFIG_FILE ..."
+
+# Write global defaults header
+cat > "$CONFIG_FILE" <<EOF
+# Fleet agent simulator — multi-cluster config
+# Generated by create-sim-clusters on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+# Clusters: $N  (sim-cluster-1 to sim-cluster-${N})
+#
+# To run:
+#   ./bin/fleet-agent-simulator --config $(realpath "$CONFIG_FILE")
+#
+# To tear down all clusters:
+#   ./agent-simulator/create-sim-clusters $N --cleanup
+
+# Global defaults — inherited by every cluster unless overridden per entry
+agentNamespace: $AGENT_NS
+heartbeatInterval: 20s
+initialDelay: 5s
+resourceCount: 10
+rolloutSteps: 1
+rolloutInterval: 5s
+
+clusters:
+EOF
+
+# Append one entry per cluster
+for i in $(seq 1 "$N"); do
+  CLUSTER_NAME="${CLUSTER_NAMES[$((i-1))]}"
+  CLUSTER_DIR="${CLUSTER_DIRS[$((i-1))]}"
+  CLUSTER_CONFIG="$CLUSTER_DIR/config.yaml"
+  CLUSTER_KUBECONFIG="$CLUSTER_DIR/kubeconfig.yaml"
+
+  # Read the bdNamespace that create-cluster wrote into the per-cluster config
+  BD_NS=$(read_config_field "$CLUSTER_CONFIG" "bdNamespace")
+  if [[ -z "$BD_NS" ]]; then
+    warn "Could not read bdNamespace from $CLUSTER_CONFIG — cluster entry will be incomplete"
+    BD_NS="<unknown>"
+  fi
+
+  cat >> "$CONFIG_FILE" <<EOF
+  - clusterNamespace: $FLEET_NS
+    clusterName: $CLUSTER_NAME
+    bdNamespace: $BD_NS
+    kubeconfig: $(realpath "$CLUSTER_KUBECONFIG")
+EOF
+done
+
+ok "Multi-cluster config written: $CONFIG_FILE"
+
+# ── summary ───────────────────────────────────────────────────────────────────
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Clusters created:     $N"
+echo "  Registration ns:      $FLEET_NS"
+for i in $(seq 1 "$N"); do
+  CLUSTER_NAME="${CLUSTER_NAMES[$((i-1))]}"
+  CLUSTER_DIR="${CLUSTER_DIRS[$((i-1))]}"
+  BD_NS=$(read_config_field "$CLUSTER_DIR/config.yaml" "bdNamespace")
+  printf "  %-20s  %s\n" "$CLUSTER_NAME" "$BD_NS"
+done
+echo "  Multi-cluster config: $CONFIG_FILE"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+SIMULATOR_CMD="$SIMULATOR_BIN --config $(realpath "$CONFIG_FILE")"
+
+if [[ "$RUN" == true ]]; then
+  if [[ ! -x "$SIMULATOR_BIN" ]]; then
+    error "Simulator binary not found or not executable: $SIMULATOR_BIN" \
+          $'\nBuild it first with: ./agent-simulator/build'
+  fi
+  info "Starting simulator ..."
+  echo "  $SIMULATOR_CMD"
+  echo ""
+  exec $SIMULATOR_CMD
+else
+  echo "Run the simulator:"
+  echo "  $SIMULATOR_CMD"
+  echo ""
+  echo "Build the simulator first if needed:"
+  echo "  ./agent-simulator/build"
+  echo ""
+  echo "To tear down all clusters and remove generated files:"
+  echo "  ./agent-simulator/create-sim-clusters $N --cleanup"
+  echo ""
+fi

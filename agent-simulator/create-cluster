@@ -24,7 +24,7 @@
 #
 # To delete everything created by this script:
 #   kubectl delete cluster <cluster-name> -n <namespace>
-#   kubectl delete role,rolebinding fleet-agent-sim -n <namespace>
+#   kubectl delete role,rolebinding fleet-agent-sim-<cluster-name> -n <namespace>
 #   (the cluster namespace and ServiceAccount are cleaned up by the Fleet controller)
 
 set -euo pipefail
@@ -72,6 +72,9 @@ done
 
 OUT_DIR="${OUT_DIR:-./$CLUSTER_NAME}"
 SA_NAME="fleet-agent-sim"
+# Role/RoleBinding names in the registration namespace must be unique per cluster
+# because multiple simulated clusters share the same registration namespace.
+REG_RBAC_NAME="fleet-agent-sim-${CLUSTER_NAME}"
 
 # ── preflight ─────────────────────────────────────────────────────────────────
 
@@ -152,7 +155,7 @@ kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: $SA_NAME
+  name: $REG_RBAC_NAME
   namespace: $FLEET_NS
   labels:
     fleet.cattle.io/managed: "true"
@@ -166,7 +169,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: $SA_NAME
+  name: $REG_RBAC_NAME
   namespace: $FLEET_NS
   labels:
     fleet.cattle.io/managed: "true"
@@ -178,7 +181,7 @@ subjects:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: $SA_NAME
+  name: $REG_RBAC_NAME
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -289,4 +292,4 @@ echo "  ./bin/fleet-agent-simulator --config $CONFIG_FILE"
 echo ""
 echo "To tear down:"
 echo "  kubectl delete cluster $CLUSTER_NAME -n $FLEET_NS"
-echo "  kubectl delete role,rolebinding $SA_NAME -n $FLEET_NS"
+echo "  kubectl delete role,rolebinding $REG_RBAC_NAME -n $FLEET_NS"
