@@ -2,15 +2,18 @@
 // It watches BundleDeployments in the cluster namespace and responds with status
 // updates – either instantly ready (Phase 2) or via a gradual N-step rollout (Phase 3).
 // Phase 4 adds optional drift simulation via the DriftScheduler.
+// Phase 7 adds Prometheus metrics instrumentation and dry-run mode.
 package simulator
 
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rancher/fleet/agent-simulator/pkg/chaos"
 	"github.com/rancher/fleet/agent-simulator/pkg/heartbeat"
+	"github.com/rancher/fleet/agent-simulator/pkg/metrics"
 	"github.com/rancher/fleet/agent-simulator/pkg/rollout"
 	"github.com/rancher/fleet/agent-simulator/pkg/status"
 	fleet "github.com/rancher/fleet/pkg/apis/fleet.cattle.io/v1alpha1"
@@ -61,6 +64,8 @@ type Options struct {
 	FailureEnabled bool
 	// Failure configures the failure scheduler when FailureEnabled is true.
 	Failure chaos.FailureOptions
+	// DryRun logs status updates without sending any API patches (Phase 7).
+	DryRun bool
 }
 
 // NewManager creates a controller-runtime manager scoped to clusterNamespace,
@@ -69,7 +74,8 @@ func NewManager(restCfg *rest.Config, scheme *runtime.Scheme, opts Options) (ctr
 	skipNameValidation := opts.SkipNameValidation
 	mgrOpts := ctrl.Options{
 		Scheme: scheme,
-		// Disable the metrics and health-probe endpoints – not needed for the simulator.
+		// Disable the metrics and health-probe endpoints – the simulator starts its
+		// own metrics server in main so that multi-cluster mode only binds once.
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: "0",
 		LeaderElection:         false,
@@ -100,7 +106,9 @@ func NewManager(restCfg *rest.Config, scheme *runtime.Scheme, opts Options) (ctr
 		ResourceCount:   opts.ResourceCount,
 		RolloutSteps:    rolloutSteps,
 		RolloutInterval: opts.RolloutInterval,
+		DryRun:          opts.DryRun,
 		tracker:         rollout.NewTracker(),
+		bdStates:        make(map[string]string),
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("setting up BD reconciler: %w", err)
@@ -113,6 +121,7 @@ func NewManager(restCfg *rest.Config, scheme *runtime.Scheme, opts Options) (ctr
 		agentNamespace:   opts.AgentNamespace,
 		initialDelay:     opts.HeartbeatInitialDelay,
 		interval:         opts.HeartbeatInterval,
+		dryRun:           opts.DryRun,
 	}
 	if err := mgr.Add(hb); err != nil {
 		return nil, fmt.Errorf("adding heartbeat runnable: %w", err)
@@ -142,6 +151,8 @@ func NewManager(restCfg *rest.Config, scheme *runtime.Scheme, opts Options) (ctr
 }
 
 // heartbeatRunnable adapts heartbeat.Ticker to the ctrl.Runnable interface.
+// In normal mode it calls heartbeat.Patch on each tick and records metrics.
+// In dry-run mode it only logs what would be sent.
 type heartbeatRunnable struct {
 	c                client.Client
 	clusterNamespace string
@@ -149,21 +160,54 @@ type heartbeatRunnable struct {
 	agentNamespace   string
 	initialDelay     time.Duration
 	interval         time.Duration
+	dryRun           bool
 }
 
 // Start implements manager.Runnable.
 func (h *heartbeatRunnable) Start(ctx context.Context) error {
-	heartbeat.Ticker(ctx, h.c, h.clusterNamespace, h.clusterName, h.agentNamespace,
-		h.initialDelay, h.interval)
-	<-ctx.Done()
-	return nil
+	logger := log.FromContext(ctx).WithName("heartbeat").
+		WithValues("cluster", h.clusterName, "namespace", h.clusterNamespace)
+
+	send := func() {
+		if h.dryRun {
+			logger.Info("[dry-run] Would send Cluster/status heartbeat",
+				"agentNamespace", h.agentNamespace)
+			return
+		}
+		if err := heartbeat.Patch(ctx, h.c, h.clusterNamespace, h.clusterName, h.agentNamespace); err != nil {
+			logger.Error(err, "failed to send heartbeat")
+		} else {
+			logger.V(1).Info("Heartbeat sent")
+			metrics.HeartbeatsTotal.WithLabelValues(h.clusterName).Inc()
+		}
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-time.After(h.initialDelay):
+	}
+
+	send()
+
+	ticker := time.NewTicker(h.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			send()
+		}
+	}
 }
 
 // BundleDeploymentReconciler watches BundleDeployments and marks them ready,
 // either instantly (RolloutSteps=1) or via an N-step gradual rollout.
+// In dry-run mode it logs transitions without sending any API patches.
 type BundleDeploymentReconciler struct {
 	client.Client
-	// ClusterName is the simulated cluster, used for log context only.
+	// ClusterName is the simulated cluster, used for log context and metrics labels.
 	ClusterName string
 	// AgentNamespace is the simulated agent namespace.
 	AgentNamespace string
@@ -173,8 +217,40 @@ type BundleDeploymentReconciler struct {
 	RolloutSteps int
 	// RolloutInterval is the delay between rollout steps.
 	RolloutInterval time.Duration
+	// DryRun skips status patches and only logs what would be sent.
+	DryRun bool
 	// tracker maintains per-BD rollout state.
 	tracker *rollout.Tracker
+	// bdStates tracks the current state of each BD for the BDState gauge.
+	bdStates   map[string]string
+	bdStatesMu sync.RWMutex
+}
+
+// setBDState updates the BDState gauge when a BD transitions to a new state.
+func (r *BundleDeploymentReconciler) setBDState(key, newState string) {
+	r.bdStatesMu.Lock()
+	defer r.bdStatesMu.Unlock()
+
+	if old, ok := r.bdStates[key]; ok && old != newState {
+		metrics.BDState.WithLabelValues(r.ClusterName, old).Dec()
+	} else if !ok {
+		// First time seeing this BD.
+	}
+	if _, ok := r.bdStates[key]; !ok || r.bdStates[key] != newState {
+		r.bdStates[key] = newState
+		metrics.BDState.WithLabelValues(r.ClusterName, newState).Inc()
+	}
+}
+
+// clearBDState removes a BD from tracking and decrements the gauge.
+func (r *BundleDeploymentReconciler) clearBDState(key string) {
+	r.bdStatesMu.Lock()
+	defer r.bdStatesMu.Unlock()
+
+	if state, ok := r.bdStates[key]; ok {
+		metrics.BDState.WithLabelValues(r.ClusterName, state).Dec()
+		delete(r.bdStates, key)
+	}
 }
 
 // Reconcile implements reconcile.Reconciler.
@@ -185,6 +261,7 @@ func (r *BundleDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err := r.Get(ctx, req.NamespacedName, &bd); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.tracker.Delete(req.NamespacedName.String())
+			r.clearBDState(req.NamespacedName.String())
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("getting BundleDeployment: %w", err)
@@ -218,12 +295,18 @@ func (r *BundleDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	step, done := r.tracker.Next(key, bd.Spec.DeploymentID, r.RolloutSteps)
 	readyCount := rollout.ReadyCount(r.ResourceCount, step, r.RolloutSteps)
 
+	bdState := "rolling"
+	if done {
+		bdState = "ready"
+	}
+
 	logger.V(1).Info("Updating BundleDeployment status",
 		"bd", bd.Name,
 		"deploymentID", bd.Spec.DeploymentID,
 		"step", step,
 		"totalSteps", r.RolloutSteps,
 		"readyCount", readyCount,
+		"state", bdState,
 	)
 
 	newStatus := status.Build(status.BuildParams{
@@ -235,11 +318,34 @@ func (r *BundleDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		BDName:         bd.Name,
 	})
 
-	patch := client.MergeFrom(bd.DeepCopy())
-	bd.Status = newStatus
-	if err := r.Status().Patch(ctx, &bd, patch); err != nil {
-		return ctrl.Result{}, fmt.Errorf("patching BundleDeployment status: %w", err)
+	if r.DryRun {
+		logger.Info("[dry-run] Would patch BundleDeployment status",
+			"bd", bd.Name,
+			"deploymentID", bd.Spec.DeploymentID,
+			"readyCount", readyCount,
+			"resourceCount", r.ResourceCount,
+			"state", bdState,
+		)
+	} else {
+		start := time.Now()
+		patch := client.MergeFrom(bd.DeepCopy())
+		bd.Status = newStatus
+		if err := r.Status().Patch(ctx, &bd, patch); err != nil {
+			metrics.PatchErrorsTotal.WithLabelValues(r.ClusterName).Inc()
+			return ctrl.Result{}, fmt.Errorf("patching BundleDeployment status: %w", err)
+		}
+		metrics.PatchDurationSeconds.WithLabelValues(r.ClusterName).Observe(time.Since(start).Seconds())
+		metrics.StatusPatchesTotal.WithLabelValues(r.ClusterName, bdState).Inc()
+
+		logger.Info("BundleDeployment status patched",
+			"bd", bd.Name,
+			"deploymentID", bd.Spec.DeploymentID,
+			"state", bdState,
+			"readyCount", readyCount,
+		)
 	}
+
+	r.setBDState(key, bdState)
 
 	if !done {
 		return ctrl.Result{RequeueAfter: r.RolloutInterval}, nil

@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,14 +14,18 @@ import (
 
 	"github.com/rancher/fleet/agent-simulator/pkg/chaos"
 	"github.com/rancher/fleet/agent-simulator/pkg/config"
+	_ "github.com/rancher/fleet/agent-simulator/pkg/metrics" // register Prometheus metrics
 	"github.com/rancher/fleet/agent-simulator/pkg/simulator"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/sync/errgroup"
+	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
@@ -43,8 +48,11 @@ func main() {
 
 func run() error {
 	var (
-		configPath string
-		kubeconfig string
+		configPath  string
+		kubeconfig  string
+		logLevel    int
+		metricsAddr string
+		dryRun      bool
 	)
 
 	flag.StringVar(&configPath, "config", "config.yaml", "Path to simulator config YAML")
@@ -52,6 +60,9 @@ func run() error {
 	if flag.Lookup("kubeconfig") == nil {
 		flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig (overrides KUBECONFIG env and config file)")
 	}
+	flag.IntVar(&logLevel, "log-level", 0, "Log verbosity (0=info, 1=debug, higher values increase verbosity)")
+	flag.StringVar(&metricsAddr, "metrics-addr", ":9090", "Metrics bind address (set to '0' to disable)")
+	flag.BoolVar(&dryRun, "dry-run", false, "Log status updates without sending any API patches")
 	flag.Parse()
 
 	// If we didn't register the flag ourselves, read whatever value was set.
@@ -65,7 +76,9 @@ func run() error {
 		kubeconfig = os.Getenv("KUBECONFIG")
 	}
 
-	logf.SetLogger(zap.New())
+	// Configure zap log level: 0=Info, 1=Debug, higher values are more verbose.
+	zapLevel := zapcore.Level(-logLevel)
+	logf.SetLogger(zap.New(zap.Level(&zapLevel)))
 	logger := logf.Log.WithName("simulator")
 
 	cfg, err := config.Load(configPath)
@@ -94,9 +107,27 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Start the Prometheus metrics server unless disabled.
+	if metricsAddr != "" && metricsAddr != "0" {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.HandlerFor(ctrlmetrics.Registry, promhttp.HandlerOpts{}))
+		srv := &http.Server{Addr: metricsAddr, Handler: mux}
+		go func() {
+			logger.Info("Starting metrics server", "addr", metricsAddr)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error(err, "metrics server error")
+			}
+		}()
+		defer func() { _ = srv.Close() }()
+	}
+
+	if dryRun {
+		logger.Info("Dry-run mode enabled: status patches will be logged but not sent")
+	}
+
 	if len(cfg.Clusters) > 0 {
 		logger.Info("Starting multi-cluster simulator", "clusterCount", len(cfg.Clusters))
-		return runMultiCluster(ctx, cfg, restCfg)
+		return runMultiCluster(ctx, cfg, restCfg, dryRun)
 	}
 
 	logger.Info("Starting simulator",
@@ -104,13 +135,14 @@ func run() error {
 		"clusterNamespace", cfg.ClusterNamespace,
 		"heartbeatInterval", cfg.HeartbeatInterval,
 		"resourceCount", cfg.ResourceCount,
+		"dryRun", dryRun,
 	)
-	return runSingleCluster(ctx, cfg, restCfg, true)
+	return runSingleCluster(ctx, cfg, restCfg, true, dryRun)
 }
 
 // runSingleCluster starts a single simulator manager for the given config.
 // skipNameValidation should be true when running multiple managers in the same process.
-func runSingleCluster(ctx context.Context, cfg *config.Config, restCfg *rest.Config, skipNameValidation bool) error {
+func runSingleCluster(ctx context.Context, cfg *config.Config, restCfg *rest.Config, skipNameValidation bool, dryRun bool) error {
 	mgr, err := simulator.NewManager(restCfg, scheme, simulator.Options{
 		ClusterNamespace:      cfg.ClusterNamespace,
 		BDNamespace:           cfg.BDNamespace,
@@ -122,7 +154,8 @@ func runSingleCluster(ctx context.Context, cfg *config.Config, restCfg *rest.Con
 		RolloutSteps:          cfg.RolloutSteps,
 		RolloutInterval:       cfg.RolloutInterval,
 		SkipNameValidation:    skipNameValidation,
-		DriftEnabled: cfg.Drift.Enabled,
+		DryRun:                dryRun,
+		DriftEnabled:          cfg.Drift.Enabled,
 		Drift: chaos.DriftOptions{
 			AffectedResourceCount: cfg.Drift.ResourceCount,
 			MinInterval:           cfg.Drift.MinInterval,
@@ -150,7 +183,7 @@ func runSingleCluster(ctx context.Context, cfg *config.Config, restCfg *rest.Con
 // runMultiCluster starts one simulator manager per cluster entry, all sharing
 // the same upstream REST config and running concurrently. A context cancellation
 // (e.g. SIGINT) stops all managers.
-func runMultiCluster(ctx context.Context, cfg *config.Config, restCfg *rest.Config) error {
+func runMultiCluster(ctx context.Context, cfg *config.Config, restCfg *rest.Config, dryRun bool) error {
 	logger := logf.Log.WithName("simulator")
 	g, ctx := errgroup.WithContext(ctx)
 
@@ -177,7 +210,7 @@ func runMultiCluster(ctx context.Context, cfg *config.Config, restCfg *rest.Conf
 			"bdNamespace", resolved.BDNamespace,
 		)
 		g.Go(func() error {
-			if err := runSingleCluster(ctx, &resolved, clusterRestCfg, true); err != nil {
+			if err := runSingleCluster(ctx, &resolved, clusterRestCfg, true, dryRun); err != nil {
 				return fmt.Errorf("cluster %s: %w", resolved.ClusterName, err)
 			}
 			return nil

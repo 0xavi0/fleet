@@ -379,7 +379,7 @@ simulator:
 
 ---
 
-## Phase 7: Observability + CLI Polish
+## Phase 7: Observability + CLI Polish ✅ DONE
 
 **Goal**: Make the simulator usable for real performance testing.
 

@@ -87,6 +87,41 @@ Stop the simulator with `Ctrl-C` (SIGINT) or `SIGTERM`.
 |------|---------|-------------|
 | `--config` | `config.yaml` | Path to the simulator YAML config file |
 | `--kubeconfig` | `$KUBECONFIG` | Path to the upstream management cluster kubeconfig |
+| `--log-level` | `0` | Log verbosity: `0`=info, `1`=debug, higher values increase verbosity |
+| `--metrics-addr` | `:9090` | Prometheus metrics server bind address; set to `0` to disable |
+| `--dry-run` | `false` | Log status updates without sending any API patches |
+
+### Dry-run mode
+
+Use `--dry-run` to verify the simulator's configuration and observe what it would do without touching the management cluster:
+
+```bash
+./bin/fleet-agent-simulator --config my-sim.yaml --dry-run
+```
+
+Every heartbeat and BundleDeployment status patch is logged with a `[dry-run]` prefix instead of being sent to the API server. The rollout state machine advances normally so you see the full sequence of transitions in the log.
+
+### Metrics
+
+By default the simulator exposes Prometheus metrics on `:9090/metrics`. In multi-cluster mode a single server is shared across all simulated clusters.
+
+```bash
+curl http://localhost:9090/metrics | grep simulator_
+```
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `simulator_heartbeats_total` | Counter | `cluster` | Cluster/status heartbeats sent |
+| `simulator_status_patches_total` | Counter | `cluster`, `state` | BD status patches sent (`state`: `rolling` or `ready`) |
+| `simulator_bd_state` | Gauge | `cluster`, `state` | Current BD count per state |
+| `simulator_patch_duration_seconds` | Histogram | `cluster` | BD status patch API call latency |
+| `simulator_patch_errors_total` | Counter | `cluster` | Failed BD status patch attempts |
+
+To disable the metrics server:
+
+```bash
+./bin/fleet-agent-simulator --config my-sim.yaml --metrics-addr 0
+```
 
 ---
 
@@ -585,7 +620,8 @@ go test ./agent-simulator/pkg/config/...
 go test ./agent-simulator/pkg/status/...
 go test ./agent-simulator/pkg/resources/...
 go test ./agent-simulator/pkg/rollout/...
-go test ./agent-simulator/pkg/chaos/...   # drift + failure unit tests
+go test ./agent-simulator/pkg/chaos/...    # drift + failure unit tests
+go test ./agent-simulator/pkg/metrics/... # Prometheus metrics unit tests
 ```
 
 Integration tests (uses envtest — requires `setup-envtest`):
@@ -635,7 +671,11 @@ agent-simulator/
       drift_integration_test.go           # envtest integration tests (drift)
       failure_integration_test.go         # envtest integration tests (failure)
       multi_cluster_integration_test.go   # envtest integration tests (multi-cluster)
+      dry_run_test.go         # envtest integration tests (dry-run mode)
       suite_test.go           # envtest setup/teardown
+    metrics/
+      metrics.go              # Prometheus metric definitions and registration
+      metrics_test.go         # unit tests for all metric types
     status/
       status.go               # BundleDeploymentStatus builder
       status_test.go
@@ -666,6 +706,6 @@ agent-simulator/
 | 4 — Drift Simulation | ✅ Done | Periodically reports drift on ready BundleDeployments with optional auto-recovery |
 | 5 — Failure Simulation | ✅ Done | Randomly transitions ready BDs to a failed state with realistic pod error messages |
 | 6 — Multi-Cluster | ✅ Done | Single binary simulating multiple independent agent clusters |
-| 7 — Observability | Planned | Prometheus metrics, structured logging, dry-run mode |
+| 7 — Observability | ✅ Done | Prometheus metrics, structured logging, `--log-level`, `--metrics-addr`, `--dry-run` |
 
 See [plan.md](./plan.md) for full implementation details and [communication.md](./communication.md) for the Fleet agent communication protocol reference.

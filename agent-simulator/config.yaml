@@ -3,6 +3,11 @@
 # Before running, fill in the real clusterNamespace and clusterName from:
 #   kubectl get clusters -A
 # and ensure the kubeconfig has PATCH access on Cluster/status in that namespace.
+#
+# CLI flags (not in this file):
+#   --log-level <int>      Log verbosity: 0=info (default), 1=debug, higher=more verbose
+#   --metrics-addr <addr>  Prometheus metrics endpoint (default :9090/metrics); set to 0 to disable
+#   --dry-run              Log status updates without sending any API patches
 
 kubeconfig: ""                    # path to management cluster kubeconfig; defaults to KUBECONFIG env
 clusterNamespace: fleet-default   # registration namespace where the Cluster CR lives (NOT the cluster-fleet-... namespace)
