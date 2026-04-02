@@ -334,6 +334,55 @@ Options:
 
 To tear down: `kubectl delete cluster sim-cluster -n fleet-default`
 
+### Option C: Create multiple simulated clusters at once
+
+The `create-sim-clusters` script provisions N clusters in one shot and generates a ready-to-use multi-cluster config:
+
+```bash
+./agent-simulator/create-sim-clusters <N> [options]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--run` | `false` | Execute the simulator immediately after creating the clusters |
+| `--cleanup` | `false` | Delete all Kubernetes resources and local files for sim-cluster-1..N |
+| `--namespace <ns>` | `fleet-default` | Fleet registration namespace |
+| `--agent-namespace <ns>` | `cattle-fleet-system` | Namespace reported in heartbeats |
+| `--token-duration <d>` | `8760h` | ServiceAccount token lifetime |
+| `--out-dir <dir>` | `.` | Base output directory for per-cluster files |
+| `--config <file>` | `sim-clusters.yaml` | Path for the generated multi-cluster config |
+| `--simulator <path>` | `./bin/fleet-agent-simulator` | Path to the simulator binary |
+| `--drift` | `false` | Enable drift simulation on all clusters (auto-recovers in 5 s) |
+| `--failures` | `false` | Enable failure simulation on all clusters (auto-recovers in 5 s) |
+| `--add-delays <max>` | — | Assign a random `rolloutSteps` (1–max) per cluster with `rolloutInterval: 500ms` so clusters report Ready at staggered speeds |
+
+When `--add-delays <max>` is set each cluster gets a random `rolloutSteps` between 1 and `max` so that Ready status propagates at different speeds rather than all at once.
+
+When `--drift` or `--failures` are set the corresponding scheduler is enabled per cluster with sensible defaults and a `recoveryDelay: 5s`, so injected faults heal quickly and the simulation stays dynamic.
+
+**Examples:**
+
+```bash
+# Create 5 clusters and print the run command
+./agent-simulator/create-sim-clusters 5
+
+# Create 3 clusters and start the simulator immediately
+./agent-simulator/create-sim-clusters 3 --run
+
+# Create 5 clusters with staggered rollout delays (up to 10 steps each), then run
+./agent-simulator/create-sim-clusters 5 --add-delays 10 --run
+
+# Create 5 clusters with drift, failures, and staggered delays, then run
+./agent-simulator/create-sim-clusters 5 --drift --failures --add-delays 10 --run
+
+# Custom output directory
+./agent-simulator/create-sim-clusters 10 --out-dir /tmp/sim --config /tmp/sim/all.yaml --run
+
+# Tear down previously created clusters
+./agent-simulator/create-sim-clusters 5 --cleanup
+./agent-simulator/create-sim-clusters 5 --cleanup --namespace fleet-local
+```
+
 Or follow the steps manually:
 
 **1. Apply a Cluster resource**
